@@ -27,7 +27,8 @@ physical behavior from a successful compile.
 
 1. Read `AGENTS.md`, this skill, the workflow, and the relevant files in `docs/`.
 2. Preserve unrelated working-tree changes. Update from `origin/main`, then create
-   a review branch named `codex/<short-topic>`.
+   a review branch named `codex/<short-topic>` for agent work or
+   `human/<short-topic>` for human-authored work.
 3. Change the smallest required surface. Pin new GitHub Actions and tool versions;
    do not add a floating core or action reference.
 4. Install candidate libraries when reproducing CI or changing the manifest:
@@ -59,7 +60,8 @@ physical behavior from a successful compile.
    ```
 
    The pre-commit hook runs the validator for staged firmware, manifest, CI, or
-   validator changes. The pre-push hook blocks direct pushes to `main`. Hooks
+   validator changes. The pre-push hook blocks direct pushes to `main` and
+   guides contributors to `codex/*` or `human/*` review branches. Hooks
    complement, but do not replace, GitHub branch protection and Actions.
 
 7. Run structural checks:
@@ -71,7 +73,7 @@ physical behavior from a successful compile.
    ```
 
    Resolve every local Markdown image/link after documentation changes. Confirm
-   renamed images in `docs/rules.md` exist and old generic names are absent.
+   moved images in `docs/images/` exist and old flat paths are absent.
 
 8. Review `git diff --stat`, `git diff --name-only`, and the staged diff. Keep build
    output, caches, secrets, and unrelated user files out of the commit.
@@ -87,7 +89,7 @@ sensor readings as unverified until measured on the actual hardware.
 
 The current movement sketch has a documented pin mismatch with the v2 schematic.
 Do not approve a powered motor test or claim hardware readiness solely because CI
-compiles. Update `docs/esp32-s3-devkitc-1-n32r16-pinout.md` when the audited
+compiles. Update `docs/hardware/esp32-s3-devkitc-1-n32r16-pinout.md` when the audited
 firmware mapping changes.
 
 ## Project References
@@ -96,9 +98,10 @@ firmware mapping changes.
 - Library manifest: `ci/arduino-libraries.txt`
 - Firmware validator: `scripts/validate-firmware.sh`
 - Hook installer: `scripts/install-git-hooks.sh`
-- Sensor library matrix: `docs/arduino-libraries.md`
+- Documentation hub: `docs/README.md`
+- Sensor library matrix: `docs/ci/arduino-libraries.md`
 - Project rules: `AGENTS.md`
-- Board and signal map: `docs/esp32-s3-devkitc-1-n32r16-pinout.md`
-- Motor and FG reference: `docs/motor-24gp-2430-reference.md`
-- Competition rules: `docs/rules.md`
+- Board and signal map: `docs/hardware/esp32-s3-devkitc-1-n32r16-pinout.md`
+- Motor and FG reference: `docs/hardware/motor-24gp-2430-reference.md`
+- Competition rules: `docs/competition/table-sumo-rules-2026.md`
 - User-facing CI result: `README.md`

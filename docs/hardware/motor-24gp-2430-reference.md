@@ -70,7 +70,7 @@ model mounting holes.
 
 The source images supplied for this note are kept beside it:
 
-- [Motor wiring and FG description](motor-24gp-2430-wire-and-fg.png)
-- [FG pulse-count note](motor-24gp-2430-fg-pulse-description.png)
-- [Motor dimensions](motor-24gp-2430-dimensions.png)
-- [64:1 performance table](motor-24gp-2430-64-to-1-specification.png)
+- [Motor wiring and FG description](../images/motor/motor-24gp-2430-wire-and-fg.png)
+- [FG pulse-count note](../images/motor/motor-24gp-2430-fg-pulse-description.png)
+- [Motor dimensions](../images/motor/motor-24gp-2430-dimensions.png)
+- [64:1 performance table](../images/motor/motor-24gp-2430-64-to-1-specification.png)

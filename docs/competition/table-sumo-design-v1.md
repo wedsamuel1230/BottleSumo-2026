@@ -12,7 +12,7 @@ authorize firmware, wiring changes, PCB changes, or a real-robot test. Phase 4
 starts only after the operator approves the Phase 2 and Phase 3 decisions below.
 
 The competition facts supplied in the task, and the repository rules digest in
-`docs/rules.md`, are the controlling 2026 rules. External BottleSumo and sumo
+`docs/competition/table-sumo-rules-2026.md`, are the controlling 2026 rules. External BottleSumo and sumo
 sources are used for engineering context only; they do not override the local
 rules.
 

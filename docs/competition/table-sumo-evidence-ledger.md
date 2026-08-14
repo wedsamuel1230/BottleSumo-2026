@@ -1,13 +1,13 @@
 # Table-Sumo Design Evidence Ledger
 
 Date: 2026-08-14
-Purpose: provenance for `docs/table-sumo-design-v1.md`
+Purpose: provenance for `docs/competition/table-sumo-design-v1.md`
 
 ## Source register
 
 | ID | Source | Evidence tier | Used for |
 |---|---|---|---|
-| R1 | Repository rules digest: [docs/rules.md](rules.md) | Local project rule baseline supplied with checkout | Arena, bottle, intentional push, size, weight, battery, autonomy, three-second survival, and unknown configuration |
+| R1 | Repository rules digest: [2026 table-sumo rules](table-sumo-rules-2026.md) | Local project rule baseline supplied with checkout | Arena, bottle, intentional push, size, weight, battery, autonomy, three-second survival, and unknown configuration |
 | R2 | User task, "Competition Context (official 2026 rules)" | Authoritative user-provided rule contract | 2026 facts that must override older external rules |
 | S1 | ST, VL53L0X product/datasheet landing material: https://www.st.com/en/imaging-and-photonics-solutions/vl53l0x.html | Primary vendor | VL53L0X family and official API context |
 | S2 | ST, VL53L0X datasheet: https://www.st.com/resource/en/datasheet/vl53l0x.pdf | Primary vendor | Device capabilities and known 0x29/XSHUT facts; the task supplied the exact multi-device facts |
@@ -24,7 +24,7 @@ Purpose: provenance for `docs/table-sumo-design-v1.md`
 
 ### Directly supported facts
 
-- `docs/rules.md` states the two-board offset/non-convex possibility, joint-line
+- `docs/competition/table-sumo-rules-2026.md` states the two-board offset/non-convex possibility, joint-line
   bottle placement, light-colored table, tape seam, unknown support height,
   bottle dimensions, intentional front contact, three-second survival, and
   hardware limits. [R1, R2]

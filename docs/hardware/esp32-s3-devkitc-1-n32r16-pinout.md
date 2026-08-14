@@ -19,10 +19,10 @@ by the CI setup change.
 
 Source design files:
 
-- [v2 schematic source](../PCB/v2/Bottlesumo-v2.fsch)
-- [v2 PCB source](../PCB/v2/Bottlesumo-v2.fbrd)
-- [v2 schematic preview](../PCB/v2/SCH.png)
-- [v2 PCB preview](../PCB/v2/PCB.png)
+- [v2 schematic source](../../PCB/v2/Bottlesumo-v2.fsch)
+- [v2 PCB source](../../PCB/v2/Bottlesumo-v2.fbrd)
+- [v2 schematic preview](../../PCB/v2/SCH.png)
+- [v2 PCB preview](../../PCB/v2/PCB.png)
 
 ## Project signal map
 
@@ -48,8 +48,11 @@ provided for this build.
 | 17 | `SDA` | I2C data | v2 schematic; pass explicitly to `Wire.begin()` |
 | 19 | `USB_D-` | USB data | ESP32-S3 USB function |
 | 20 | `USB_D+` | USB data | ESP32-S3 USB function |
+| 21 | `LED1` | OUTPUT | LED indicator |
 | 43 | `U0TXD` | UART transmit | Board UART signal |
 | 44 | `U0RXD` | UART receive | Board UART signal |
+| 47 | `LED2` | OUTPUT | LED indicator |
+| 48 | `LED3` | OUTPUT | LED indicator |
 
 Power and ground connections are shown in the schematic and must be checked
 against the assembled board before power is applied. The motor supply is a
@@ -67,7 +70,7 @@ do not match the v2 schematic signal map:
 | `LDIR` | 2 | 11 | GPIO2 is `IR2_OUT` in the schematic |
 | `RPWM` | 15 | 13 | GPIO15 is `XSHUT3` in the schematic |
 | `RDIR` | 14 | 14 | Matches `DIR2` |
-| `LED1` | 17 | 17 | GPIO17 is `SDA` in the schematic |
+| `LED1` | 17 | 21 | GPIO17 is `SDA` in the schematic |
 | FG inputs | Not implemented | 9 and 12 | Add pulse capture only after electrical-level validation |
 
 Do not use the current movement sketch for a powered motor test until this
