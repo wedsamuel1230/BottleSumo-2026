@@ -64,6 +64,12 @@ physical behavior from a successful compile.
    guides contributors to `codex/*` or `human/*` review branches. Hooks
    complement, but do not replace, GitHub branch protection and Actions.
 
+   For Codex sessions, review and trust the project-local lifecycle hooks with
+   `/hooks`. Their configuration is `.codex/hooks.json`; test them with
+   `python3 scripts/test-codex-hooks.py`. They add project context, block unsafe
+   Git operations, and request a final validation pass, but do not replace the
+   Git hooks or CI.
+
 7. Run structural checks:
 
    ```bash
@@ -101,6 +107,7 @@ firmware mapping changes.
 - Documentation hub: `docs/README.md`
 - Sensor library matrix: `docs/ci/arduino-libraries.md`
 - Project rules: `AGENTS.md`
+- Codex lifecycle hooks: `.codex/hooks.json` and `docs/ci/codex-hooks.md`
 - Board and signal map: `docs/hardware/esp32-s3-devkitc-1-n32r16-pinout.md`
 - Motor and FG reference: `docs/hardware/motor-24gp-2430-reference.md`
 - Competition rules: `docs/competition/table-sumo-rules-2026.md`

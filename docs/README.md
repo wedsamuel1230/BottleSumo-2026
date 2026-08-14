@@ -19,6 +19,7 @@ pages stay easy to scan.
 
 - [Arduino CI review](ci/arduino-ci-review.md) - validation gates and residual hardware risk.
 - [Arduino sensor library matrix](ci/arduino-libraries.md) - pinned candidate library names and versions.
+- [Codex project hooks](ci/codex-hooks.md) - session context, Git safety, and final verification guardrails.
 
 ## Images
 

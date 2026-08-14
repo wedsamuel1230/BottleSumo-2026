@@ -11,6 +11,7 @@ constraints and references.
 - Treat `ci/arduino-libraries.txt` as the versioned candidate sensor-library manifest.
 - Start at `docs/README.md` for the documentation map.
 - Use `docs/ci/arduino-libraries.md` for the sensor-library choice and registry-name map.
+- Use `docs/ci/codex-hooks.md` for the Codex lifecycle hook behavior and trust procedure.
 - Use `docs/hardware/esp32-s3-devkitc-1-n32r16-pinout.md` for the board and GPIO map.
 - Use `docs/hardware/motor-24gp-2430-reference.md` for the motor and FG reference.
 - Use `docs/competition/table-sumo-rules-2026.md` for the attached 2026 rules transcription.
@@ -66,6 +67,10 @@ because a future sketch includes a header.
 - The pre-push hook blocks direct pushes to `main` and guides contributors to
   `codex/*` or `human/*` review branches; hooks are guardrails, not a substitute
   for GitHub branch protection.
+- Project-local Codex hooks are configured in `.codex/hooks.json`. Review and trust
+  them with `/hooks` before relying on session guardrails. They block unsafe Git
+  operations, add BottleSumo context, and request final verification; they do not
+  replace the Git hooks, CI, or human merge review.
 
 Loop Engine state and ledgers are machine-local runtime artifacts and are ignored
 by `.gitignore`; do not add them to project commits.
@@ -73,6 +78,7 @@ by `.gitignore`; do not add them to project commits.
 ## Verification
 
 Before committing, run `./scripts/validate-firmware.sh`, `git diff --check`, and
-workflow contract checks. Resolve local Markdown image and link references.
+workflow contract checks. Run `python3 scripts/test-codex-hooks.py` when changing
+the Codex hook configuration or handlers. Resolve local Markdown image and link references.
 Inspect the staged file list and staged diff, then report any unverified hardware
 behavior explicitly.
