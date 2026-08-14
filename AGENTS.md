@@ -9,9 +9,11 @@ constraints and references.
 - Read `.agents/skills/bottlesumo-arduino-ci/SKILL.md` for CI or Arduino CLI work.
 - Treat `.github/workflows/arduino-cli-build.yml` as the executable CI contract.
 - Treat `ci/arduino-libraries.txt` as the versioned candidate sensor-library manifest.
-- Use `docs/arduino-libraries.md` for the sensor-library choice and registry-name map.
-- Use `docs/esp32-s3-devkitc-1-n32r16-pinout.md` for the board and GPIO map.
-- Use `docs/motor-24gp-2430-reference.md` for the motor and FG reference.
+- Start at `docs/README.md` for the documentation map.
+- Use `docs/ci/arduino-libraries.md` for the sensor-library choice and registry-name map.
+- Use `docs/hardware/esp32-s3-devkitc-1-n32r16-pinout.md` for the board and GPIO map.
+- Use `docs/hardware/motor-24gp-2430-reference.md` for the motor and FG reference.
+- Use `docs/competition/table-sumo-rules-2026.md` for the attached 2026 rules transcription.
 
 ## Build Contract
 
@@ -52,15 +54,18 @@ because a future sketch includes a header.
 ## Git Safety
 
 - Start from an up-to-date `origin/main`.
-- Create a feature branch named `codex/<short-topic>` for Codex changes.
-- Push the feature branch only; never push these changes directly to `main`.
+- Create a review branch named `codex/<short-topic>` for agent changes or
+  `human/<short-topic>` for human-authored changes.
+- Push a `codex/*` or `human/*` review branch only; never push these changes
+  directly to `main`.
 - Do not force-push or merge. Human review and merge into `main` are required.
 - Preserve unrelated working-tree changes and stage explicit paths only.
 - Keep build output, caches, secrets, and machine-local files out of commits.
 - Install the versioned hooks with `./scripts/install-git-hooks.sh`.
 - The pre-commit hook validates staged firmware, manifest, validator, and CI changes.
-- The pre-push hook blocks direct pushes to `main`; hooks are guardrails, not a
-  substitute for GitHub branch protection.
+- The pre-push hook blocks direct pushes to `main` and guides contributors to
+  `codex/*` or `human/*` review branches; hooks are guardrails, not a substitute
+  for GitHub branch protection.
 
 Loop Engine state and ledgers are machine-local runtime artifacts and are ignored
 by `.gitignore`; do not add them to project commits.

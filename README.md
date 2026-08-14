@@ -30,12 +30,10 @@ Arduino sketch under `firmware/`. Arduino CLI resolves installed libraries when
 it sees an `#include`, but it does not download an arbitrary missing library
 from the registry automatically.
 
-## Hardware references
+## Documentation
 
-- [ESP32-S3-DEVKITC-1-N32R16 pinout and project wiring](docs/esp32-s3-devkitc-1-n32r16-pinout.md)
-- [MY24GP-2430 motor and FG reference](docs/motor-24gp-2430-reference.md)
-- [Arduino sensor library matrix](docs/arduino-libraries.md)
-- [Competition rules digest](docs/rules.md)
+Use the [documentation hub](docs/README.md) to navigate the competition,
+hardware, CI, and image references.
 
 ## Firmware
 

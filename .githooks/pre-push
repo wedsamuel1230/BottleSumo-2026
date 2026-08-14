@@ -3,7 +3,7 @@ set -euo pipefail
 
 while read -r local_ref local_sha remote_ref remote_sha; do
   if [ "$remote_ref" = "refs/heads/main" ]; then
-    echo "Direct pushes to main are blocked by the project hook; push a codex/* review branch for human merge." >&2
+    echo "Direct pushes to main are blocked by the project hook; push a codex/* or human/* review branch for human merge." >&2
     exit 1
   fi
 done
