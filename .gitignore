@@ -65,3 +65,7 @@ pnpm-debug.log*
 *.orig
 *.lck
 *-backups/
+
+# Local Loop Engine runtime state
+**/loop-state.json
+**/experiment-ledger.jsonl
