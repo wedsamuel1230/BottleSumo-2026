@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+validate=0
+
+while IFS= read -r file_path; do
+  case "$file_path" in
+    firmware/*|ci/arduino-libraries.txt|scripts/validate-firmware.sh|scripts/install-arduino-libraries.sh|.github/workflows/arduino-cli-build.yml)
+      validate=1
+      ;;
+  esac
+done < <(git diff --cached --name-only --diff-filter=ACMRTD)
+
+if [ "$validate" -eq 1 ]; then
+  exec "$repo_root/scripts/validate-firmware.sh"
+fi

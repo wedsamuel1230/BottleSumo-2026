@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   compile:
-    name: Compile movement firmware
+    name: Compile all firmware
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -28,8 +28,8 @@ jobs:
           arduino-cli core update-index
           arduino-cli core install esp32:esp32@3.3.8
 
-      - name: Compile for ESP32-S3-DEVKITC-1-N32R16
-        run: >-
-          arduino-cli compile --clean --warnings all
-          --fqbn esp32:esp32:esp32s3-octal:FlashSize=32M
-          firmware/movement_test
+      - name: Install candidate sensor libraries
+        run: ./scripts/install-arduino-libraries.sh
+
+      - name: Compile all firmware for ESP32-S3-DEVKITC-1-N32R16
+        run: ./scripts/validate-firmware.sh
