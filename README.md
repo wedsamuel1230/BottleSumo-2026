@@ -8,7 +8,7 @@ Hardware, PCB, 3D model, and firmware files for the BottleSumo robot.
 
 Every pushed commit and pull request runs the Arduino CLI build workflow. The
 workflow installs Arduino CLI 1.4.1 and Arduino-ESP32 3.3.8, then compiles the
-uploaded movement sketch for the planned ESP32-S3-DEVKITC-1-N32R16 board:
+firmware programs for the planned ESP32-S3-DEVKITC-1-N32R16 board:
 
 ```text
 esp32:esp32:esp32s3-octal:FlashSize=32M
@@ -24,10 +24,17 @@ The current hardware note assigns the two motor FG inputs to `GPIO9` and
 motor revolution. Electrical level and motor-to-pin assignment still require
 bench verification.
 
+The CI workflow installs the versioned candidate sensor libraries listed in
+[`ci/arduino-libraries.txt`](ci/arduino-libraries.txt) before compiling every
+Arduino sketch under `firmware/`. Arduino CLI resolves installed libraries when
+it sees an `#include`, but it does not download an arbitrary missing library
+from the registry automatically.
+
 ## Hardware references
 
 - [ESP32-S3-DEVKITC-1-N32R16 pinout and project wiring](docs/esp32-s3-devkitc-1-n32r16-pinout.md)
 - [MY24GP-2430 motor and FG reference](docs/motor-24gp-2430-reference.md)
+- [Arduino sensor library matrix](docs/arduino-libraries.md)
 - [Competition rules digest](docs/rules.md)
 
 ## Firmware
