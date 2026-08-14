@@ -1,0 +1,4 @@
+interface:
+  display_name: "BottleSumo Arduino CI"
+  short_description: "Build and release ESP32-S3 firmware safely"
+  default_prompt: "Use $bottlesumo-arduino-ci to validate or update the BottleSumo ESP32-S3 CI workflow."
