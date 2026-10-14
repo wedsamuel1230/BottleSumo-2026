@@ -6,25 +6,31 @@ constraints and references.
 
 ## Required References
 
-- Read `.agents/skills/bottlesumo-arduino-ci/SKILL.md` for CI or Arduino CLI work.
-- Treat `.github/workflows/arduino-cli-build.yml` as the executable CI contract.
-- Treat `ci/arduino-libraries.txt` as the versioned candidate sensor-library manifest.
+- Read `.agents/skills/bottlesumo-arduino-ci/SKILL.md` for firmware or PlatformIO CI work.
+- Treat `.github/workflows/platformio-build.yml` as the executable CI contract.
+- Treat `ci/arduino-libraries.txt` as a historical candidate sensor-library inventory; active PlatformIO dependencies are pinned in the project configs.
 - Start at `docs/README.md` for the documentation map.
-- Use `docs/ci/arduino-libraries.md` for the sensor-library choice and registry-name map.
-- Use `docs/hardware/esp32-s3-devkitc-1-n32r16-pinout.md` for the board and GPIO map.
+- Use `docs/ci/arduino-libraries.md` for the historical candidate sensor-library matrix.
+- Use `docs/ci/platformio-firmware.md` for the all-program PlatformIO layout and build commands.
+- Use `docs/hardware/esp32-s3-devkitc-1-n16r8-pinout.md` for the active board and GPIO map;
+  the N32R16 document is historical.
+- Use `docs/competition/esp-idf-wireless.md` for FreeRTOS, OTA and bench-control boundaries.
 - Use `docs/hardware/motor-24gp-2430-reference.md` for the motor and FG reference.
 - Use `docs/competition/table-sumo-rules-2026.md` for the attached 2026 rules transcription.
 
 ## Build Contract
 
-- Target board: `ESP32-S3-DEVKITC-1-N32R16`.
-- FQBN: `esp32:esp32:esp32s3-octal:FlashSize=32M`.
-- Arduino CLI: `1.4.1`.
-- Arduino-ESP32 core: `3.3.8`.
-- Firmware programs: every Arduino sketch (`*.ino`) under `firmware/`.
+- Active board: `ESP32-S3-DEVKITC-1-N16R8` (16 MB quad flash, 8 MB octal PSRAM).
+- Active framework: native ESP-IDF `6.0.1`, PlatformIO Core `6.2.0`, `platformio/espressif32@7.0.1`.
+- PlatformIO environments: `robot` and `espnow_receiver`; configuration in `platformio.ini`.
+- Shared board profile: `boards/esp32-s3-devkitc1-n16r8.json` (16 MB quad flash, 8 MB octal PSRAM).
+- Python tools are locked in `pyproject.toml` and `uv.lock` and run with Python 3.12, including PlatformIO Core `6.2.0`.
+- Existing Arduino sketches are separate PlatformIO projects targeting the active N16R8 16 MB flash profile. They use the pinned pioarduino platform release for Arduino-ESP32 `3.3.8`; do not inherit the root IDF platform's Arduino `2.0.17` package.
+- The former Arduino CLI `1.4.1` / FQBN `esp32:esp32:esp32s3-octal:FlashSize=32M` build is historical and is not the active board profile.
+- Shared Arduino project settings are in `platformio-arduino-common.ini`; each sketch folder has its own `platformio.ini`.
 - CI triggers: `push`, `pull_request`, and `workflow_dispatch`.
 
-Every firmware-program change, including a new sketch, refactor, library include,
+Every firmware-program change, including native ESP-IDF source, a new sketch, refactor, library include,
 or build-setting change, must pass the repository validator:
 
 ```bash
@@ -35,10 +41,16 @@ Compilation proves only that the sketch builds for the selected toolchain. It
 does not prove motor direction, FG electrical levels, PWM behavior, sensor
 readings, or powered robot safety.
 
-CI runs `scripts/install-arduino-libraries.sh` first. It installs every pinned
-entry in `ci/arduino-libraries.txt` and lets each package install its declared
-dependencies. Arduino CLI does not auto-download missing libraries merely
-because a future sketch includes a header.
+`scripts/validate-firmware.sh` discovers every `firmware/**/*.ino` PlatformIO
+project, builds it, and then builds both native ESP-IDF environments. It invokes
+PlatformIO Core 6.2.0 through `uv` with Python 3.12 by default. Each sketch's
+`lib_deps` is resolved by PlatformIO; `ci/arduino-libraries.txt` is not part of
+the active build contract. `PLATFORMIO_BIN` can explicitly select a local Core
+executable instead of `uv`.
+
+Keep `wireless.local.json` ignored; provision credentials into NVS rather than embedding them in firmware images. OTA writes only while outputs are stopped and
+physically armed. Remote driving is bench-only, selected with BUTTON2 at boot;
+an autonomous round must reject steering. A missing drive lease stops outputs.
 
 ## Hardware Boundaries
 

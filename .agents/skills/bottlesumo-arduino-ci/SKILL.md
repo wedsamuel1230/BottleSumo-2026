@@ -1,107 +1,58 @@
 ---
 name: bottlesumo-arduino-ci
-description: Validate every BottleSumo firmware-program change and build, inspect, or update the GitHub Actions Arduino CLI workflow for the ESP32-S3-DEVKITC-1-N32R16, including explicit sensor-library installation, toolchain pinning, README status reporting, hardware-reference updates, hooks, and safe feature-branch delivery. Use when changing any `firmware/**/*.ino`, `ci/arduino-libraries.txt`, `.github/workflows/arduino-cli-build.yml`, or related validation/documentation files.
+description: Build and maintain every BottleSumo firmware program with PlatformIO, including the native ESP-IDF robot and receiver plus the existing Arduino sketches. Use when changing firmware, PlatformIO configuration, or the firmware CI workflow.
 ---
 
-# BottleSumo Arduino CI
+# BottleSumo Firmware Builds
 
-## Contract
+## Build contract
 
-Treat `.github/workflows/arduino-cli-build.yml` as the executable source of truth.
-Keep the following contract synchronized with the workflow and the linked project
-references:
+PlatformIO manages every firmware program in this repository:
 
-- Board: `ESP32-S3-DEVKITC-1-N32R16`
-- FQBN: `esp32:esp32:esp32s3-octal:FlashSize=32M`
-- Arduino CLI: `1.4.1`
-- Arduino-ESP32 core: `3.3.8`
-- Firmware programs: every Arduino sketch (`*.ino`) under `firmware/`
-- Sensor manifest: `ci/arduino-libraries.txt`
-- Triggers: `push`, `pull_request`, and `workflow_dispatch`
+- Root `platformio.ini`: native ESP-IDF 6.0.1 environments `robot` and `espnow_receiver` for the active ESP32-S3-DEVKITC-1-N16R8.
+- Each `firmware/<sketch>/platformio.ini`: one existing Arduino sketch, built for the N16R8 flash profile.
+- `platformio-arduino-common.ini`: shared, pinned Arduino-ESP32 3.3.8 PlatformIO platform and board settings. Arduino 3.x currently uses the pinned pioarduino platform release because the root ESP-IDF platform's Arduino package is 2.0.17.
+- `boards/esp32-s3-devkitc1-n16r8.json`: shared board definition for the selected 16 MB quad-flash, 8 MB octal-PSRAM module.
+- The two ToF sketches pin Pololu VL53L0X by Git commit in their PlatformIO project configs.
+- `scripts/validate-firmware.sh`: required all-program gate; discovers every `*.ino`, then builds both native ESP-IDF environments.
+- Python used by PlatformIO and the bench tools is managed through `uv.lock`, with Python 3.12, PlatformIO Core 6.2.0, and the required `intelhex`/`pyserial` modules pinned.
+- `.github/workflows/platformio-build.yml`: executable CI contract; triggers on push, pull request, and manual dispatch.
 
-Use the project pinout reference for GPIO assignments, the motor reference for
-FG/PWM facts, and the sensor library matrix for package choices. Do not infer
-physical behavior from a successful compile.
+The old `ci/arduino-libraries.txt` is retained as a candidate-library inventory for reference. It is not installed by the PlatformIO build. Add actual firmware dependencies to the relevant project's `lib_deps` instead.
 
 ## Workflow
 
-1. Read `AGENTS.md`, this skill, the workflow, and the relevant files in `docs/`.
-2. Preserve unrelated working-tree changes. Update from `origin/main`, then create
-   a review branch named `codex/<short-topic>` for agent work or
-   `human/<short-topic>` for human-authored work.
-3. Change the smallest required surface. Pin new GitHub Actions and tool versions;
-   do not add a floating core or action reference.
-4. Install candidate libraries when reproducing CI or changing the manifest:
+1. Read the repository `AGENTS.md`, this skill, the CI workflow, and the relevant hardware and competition documents.
+2. Preserve unrelated working-tree changes. The all-program validator is the required compile gate:
 
    ```bash
-   ./scripts/install-arduino-libraries.sh
-   ```
-
-   Arduino CLI can resolve an installed library after seeing an `#include`, but
-   it does not auto-download an arbitrary missing library from the registry.
-   Keep future sensor choices in `ci/arduino-libraries.txt` instead of hiding
-   installation commands in the workflow.
-
-5. Run the local firmware gate when Arduino CLI and the ESP32 core are available:
-
-   ```bash
-   arduino-cli version
-   arduino-cli core list
+   uv sync --frozen
    ./scripts/validate-firmware.sh
    ```
 
-   The validator discovers and compiles every `*.ino` under `firmware/`, so a
-   new firmware program cannot silently avoid the build gate.
-
-6. Install the versioned hooks for local guardrails:
+   It uses the locked `uv` environment by default. Set `PLATFORMIO_BIN` only when intentionally using an existing PlatformIO installation.
+3. Build one Arduino reference sketch directly when needed:
 
    ```bash
-   ./scripts/install-git-hooks.sh
+   uv run --frozen platformio run --project-dir firmware/bottlesumo_competition -e n16r8
    ```
 
-   The pre-commit hook runs the validator for staged firmware, manifest, CI, or
-   validator changes. The pre-push hook blocks direct pushes to `main` and
-   guides contributors to `codex/*` or `human/*` review branches. Hooks
-   complement, but do not replace, GitHub branch protection and Actions.
+   Use `firmware/bottlesumo_v2_test` or `firmware/movement_test` to select the other sketches. Build the active native environments from the repository root with `-e robot -e espnow_receiver`.
+4. Keep `platformio-arduino-common.ini` and leaf project settings synchronized. Do not copy sketches into a central build directory; each source remains in its own PlatformIO project.
+5. Run `git diff --check`, verify the workflow and project configurations, and resolve local Markdown links after documentation changes. Preserve the existing feature branch and do not push or merge unless separately requested.
+6. Report compile evidence and any hardware behavior that remains unverified.
 
-7. Run structural checks:
+## Hardware boundary
 
-   ```bash
-   git diff --check
-   rg -n 'push:|pull_request:|workflow_dispatch:|esp32:esp32@3.3.8|esp32:esp32:esp32s3-octal:FlashSize=32M' \
-     .github/workflows/arduino-cli-build.yml
-   ```
+Compilation does not prove motor direction, GPIO electrical levels, FG polarity, PWM behavior, sensor readings, wiring, or powered-robot safety. Motor FG inputs are documented on GPIO9 and GPIO12 with 9 square-wave pulses per motor revolution. Resolve the firmware-to-schematic pin mismatch before a powered movement test. The `movement_test` sketch commands repeated motion and is not a safe diagnostic with wheels on the ground.
 
-   Resolve every local Markdown image/link after documentation changes. Confirm
-   moved images in `docs/images/` exist and old flat paths are absent.
+## Project references
 
-8. Review `git diff --stat`, `git diff --name-only`, and the staged diff. Keep build
-   output, caches, secrets, and unrelated user files out of the commit.
-9. Push the review branch only. Never push this project change directly to `main`,
-   force-push, or merge it. A human must review and merge the branch into `main`.
-
-## Hardware Boundary
-
-The project currently assigns motor FG inputs to GPIO9 and GPIO12 and records 9
-square-wave FG pulses per motor revolution. Treat motor wire identity, FG voltage,
-pull-up requirements, shaft reference, direction polarity, PWM behavior, and
-sensor readings as unverified until measured on the actual hardware.
-
-The current movement sketch has a documented pin mismatch with the v2 schematic.
-Do not approve a powered motor test or claim hardware readiness solely because CI
-compiles. Update `docs/hardware/esp32-s3-devkitc-1-n32r16-pinout.md` when the audited
-firmware mapping changes.
-
-## Project References
-
-- Workflow: `.github/workflows/arduino-cli-build.yml`
-- Library manifest: `ci/arduino-libraries.txt`
-- Firmware validator: `scripts/validate-firmware.sh`
-- Hook installer: `scripts/install-git-hooks.sh`
+- Build workflow: `.github/workflows/platformio-build.yml`
+- All-program validator: `scripts/validate-firmware.sh`
+- Active native environments: `platformio.ini`
+- Shared Arduino settings and board profile: `platformio-arduino-common.ini`, `boards/esp32-s3-devkitc1-n16r8.json`
 - Documentation hub: `docs/README.md`
-- Sensor library matrix: `docs/ci/arduino-libraries.md`
-- Project rules: `AGENTS.md`
-- Board and signal map: `docs/hardware/esp32-s3-devkitc-1-n32r16-pinout.md`
+- Active N16R8 GPIO map: `docs/hardware/esp32-s3-devkitc-1-n16r8-pinout.md`
 - Motor and FG reference: `docs/hardware/motor-24gp-2430-reference.md`
 - Competition rules: `docs/competition/table-sumo-rules-2026.md`
-- User-facing CI result: `README.md`

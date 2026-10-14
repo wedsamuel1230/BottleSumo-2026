@@ -1,0 +1,13 @@
+[project]
+name = "bottlesumo-firmware-tools"
+version = "0.1.0"
+description = "Locked Python tools for BottleSumo firmware builds and bench diagnostics"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "intelhex==2.3.0",
+  "platformio==6.2.0",
+  "pyserial==3.5",
+]
+
+[tool.uv]
+package = false

@@ -61,6 +61,37 @@ pin.
 
 ## Current firmware pin audit
 
+### Competition firmware: test pinout takes precedence
+
+The new [competition sketch](../../firmware/bottlesumo_competition/bottlesumo_competition.ino)
+uses the supplied `bottlesumo_v2_test` mapping. The user confirmed these physical
+positions and the extra XSHUT wiring; these are not bench-verified electrical facts:
+
+| Function | GPIO |
+| --- | --- |
+| Front-left / front-right / rear-left / rear-right QRE | 1 / 2 / 4 / 5 |
+| Left motor FG / PWM / DIR | 9 / 10 / 11 |
+| Right motor FG / PWM / DIR | 12 / 13 / 14 |
+| SDA / SCL | 17 / 16 |
+| Left / center / right ToF XSHUT | 6 / 7 / 15 |
+| Preserved single ToF interrupt input | 18 |
+| Status LED / start button / stop button | 40 / 41 / 42 |
+
+GPIO40/41/42 follow the test program, rather than the older schematic LED map
+above. Three ToF heads use addresses `0x30/0x31/0x32` assigned at each boot;
+XSHUT must be disconnected from fixed 3V3 and controlled independently. The
+sketch releases XSHUT to the module pull-up with INPUT. PWM is explicitly 20 kHz,
+8-bit; FG counting is disabled until electrical confirmation and is diagnostic
+only. Motors remain locked by `HARDWARE_CONFIRMED=false` and require valid QRE
+calibration plus a new start-button press. See the
+[strategy and commissioning guide](../competition/competition-firmware.md).
+
+This resolves the new competition program's pin mapping, not the old movement
+sketch's mismatch or the physical PCB audit. Do not use that old sketch for
+powered commissioning.
+
+### Legacy movement test
+
 The existing movement sketch is preserved for CI compilation, but its constants
 do not match the v2 schematic signal map:
 

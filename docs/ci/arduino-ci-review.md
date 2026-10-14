@@ -1,6 +1,10 @@
-# Arduino CI Review Record
+# Historical Arduino CLI CI Review Record
 
 Date: 2026-08-14
+
+This is an archived review of the earlier Arduino CLI workflow. The active
+all-firmware gate is now PlatformIO; see
+[PlatformIO firmware management](platformio-firmware.md).
 
 ## Scope
 

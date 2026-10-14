@@ -6,7 +6,7 @@ validate=0
 
 while IFS= read -r file_path; do
   case "$file_path" in
-    firmware/*|ci/arduino-libraries.txt|scripts/validate-firmware.sh|scripts/install-arduino-libraries.sh|.github/workflows/arduino-cli-build.yml)
+    firmware/*|boards/*|platformio.ini|platformio-arduino-common.ini|pyproject.toml|uv.lock|CMakeLists.txt|ci/arduino-libraries.txt|scripts/validate-firmware.sh|scripts/install-arduino-libraries.sh|.github/workflows/platformio-build.yml)
       validate=1
       ;;
   esac

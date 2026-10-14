@@ -1,14 +1,13 @@
 # Arduino sensor library matrix
 
-The GitHub Actions workflow installs these pinned candidate libraries before it
-compiles every Arduino sketch under `firmware/`. The current movement sketch
-only includes `Arduino.h`; the sensor libraries are installed now so future
-firmware changes have a known CI dependency set.
+This is a historical candidate matrix for sensor selection. The active
+PlatformIO CI no longer installs every candidate. The competition and v2 test
+projects declare the Pololu VL53L0X dependency in their own `platformio.ini`
+files; the movement sketch uses only `Arduino.h`.
 
-Arduino CLI resolves a library after a sketch includes a matching header, but a
-fresh GitHub runner does not automatically download an arbitrary missing library
-from the registry. The workflow therefore installs this explicit manifest:
-`ci/arduino-libraries.txt`.
+`ci/arduino-libraries.txt` remains for legacy Arduino CLI use. For active builds,
+declare dependencies with PlatformIO `lib_deps` and pin registry versions or a
+specific VCS commit.
 
 | Sensor | Arduino CLI package | Author | ROI / multizone | Project use |
 | --- | --- | --- | --- | --- |

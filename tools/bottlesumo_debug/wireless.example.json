@@ -1,0 +1,11 @@
+{
+  "wifi_password": "",
+  "ota_token": "",
+  "wifi_channel": 6,
+  "robot_mac": "00:00:00:00:00:00",
+  "receiver_mac": "00:00:00:00:00:00",
+  "espnow_pmk": "",
+  "espnow_lmk": "",
+  "sta_ssid": "",
+  "sta_password": ""
+}
