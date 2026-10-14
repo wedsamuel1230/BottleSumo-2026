@@ -56,6 +56,15 @@ pnpm-debug.log*
 .env
 .env.*
 !.env.example
+tools/bottlesumo_debug/wireless.local.json
+firmware/bottlesumo_idf/main/network.local.h
+firmware/bottlesumo_idf/sdkconfig
+firmware/bottlesumo_idf/sdkconfig.receiver
+firmware/bottlesumo_idf/sdkconfig*.old
+sdkconfig.robot
+sdkconfig.espnow_receiver
+dependencies.lock
+managed_components/
 
 # Temporary exports, backups, and lock files
 *.log

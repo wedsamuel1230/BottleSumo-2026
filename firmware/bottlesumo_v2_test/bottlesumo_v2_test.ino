@@ -54,14 +54,8 @@ uint32_t lastLiveReportMs = 0;
 
 volatile uint32_t motor1Edges = 0;
 volatile uint32_t motor2Edges = 0;
-
-void IRAM_ATTR motor1EdgeISR() {
-  ++motor1Edges;
-}
-
-void IRAM_ATTR motor2EdgeISR() {
-  ++motor2Edges;
-}
+void motor1EdgeISR();
+void motor2EdgeISR();
 
 void printHelp();
 void scanI2C();
