@@ -54,14 +54,15 @@ provided for this build.
 | 47 | `LED2` | OUTPUT | LED indicator |
 | 48 | `LED3` | OUTPUT | LED indicator |
 
-Power and ground connections are shown in the schematic and must be checked
-against the assembled board before power is applied. The motor supply is a
+The firmware drives `LED2` and `LED3` on GPIO47/48 together and leaves `LED1`
+on GPIO21 unused. Power and ground connections are shown in the schematic and
+must be checked against the assembled board before power is applied. The motor supply is a
 separate 12 V rail in the design; do not connect it to an ESP32 GPIO or 3V3
 pin.
 
 ## Current firmware pin audit
 
-### Competition firmware: test pinout takes precedence
+### Competition firmware
 
 The new [competition sketch](../../firmware/bottlesumo_competition/bottlesumo_competition.ino)
 uses the supplied `bottlesumo_v2_test` mapping. The user confirmed these physical
@@ -74,11 +75,11 @@ positions and the extra XSHUT wiring; these are not bench-verified electrical fa
 | Right motor FG / PWM / DIR | 12 / 13 / 14 |
 | SDA / SCL | 17 / 16 |
 | Left / center / right ToF XSHUT | 6 / 7 / 15 |
-| Preserved single ToF interrupt input | 18 |
-| Status LED / start button / stop button | 40 / 41 / 42 |
+| Status LED / start button / stop button | 48 + 47 / 41 / 42 |
 
-GPIO40/41/42 follow the test program, rather than the older schematic LED map
-above. Three ToF heads use addresses `0x30/0x31/0x32` assigned at each boot;
+GPIO48/47/41/42 follow the firmware: both status LEDs are driven together.
+The v2 board has no GPIO18 connection; the three ToF heads use XSHUT only.
+Three ToF heads use addresses `0x30/0x31/0x32` assigned at each boot;
 XSHUT must be disconnected from fixed 3V3 and controlled independently. The
 sketch releases XSHUT to the module pull-up with INPUT. PWM is explicitly 20 kHz,
 8-bit; FG counting is disabled until electrical confirmation and is diagnostic
@@ -86,27 +87,24 @@ only. Motors remain locked by `HARDWARE_CONFIRMED=false` and require valid QRE
 calibration plus a new start-button press. See the
 [strategy and commissioning guide](../competition/competition-firmware.md).
 
-This resolves the new competition program's pin mapping, not the old movement
-sketch's mismatch or the physical PCB audit. Do not use that old sketch for
-powered commissioning.
+Both sketches now match the v2 schematic signal map. The physical PCB audit and
+the powered commissioning checks are still required.
 
 ### Legacy movement test
 
-The existing movement sketch is preserved for CI compilation, but its constants
-do not match the v2 schematic signal map:
+The movement sketch uses the v2 schematic signal map:
 
-| Sketch constant | Current GPIO | v2 schematic / planned GPIO | Concern |
-| --- | ---: | ---: | --- |
-| `LPWM` | 1 | 10 | GPIO1 is `IR1_OUT` in the schematic |
-| `LDIR` | 2 | 11 | GPIO2 is `IR2_OUT` in the schematic |
-| `RPWM` | 15 | 13 | GPIO15 is `XSHUT3` in the schematic |
-| `RDIR` | 14 | 14 | Matches `DIR2` |
-| `LED1` | 17 | 21 | GPIO17 is `SDA` in the schematic |
-| FG inputs | Not implemented | 9 and 12 | Add pulse capture only after electrical-level validation |
+| Sketch constant | GPIO | v2 schematic signal |
+| --- | ---: | --- |
+| `LPWM` | 10 | `PWM1` |
+| `LDIR` | 11 | `DIR1` |
+| `RPWM` | 13 | `PWM2` |
+| `RDIR` | 14 | `DIR2` |
+| `LED1` / `LED2` | 48 / 47 | `LED3` / `LED2`; `LED1` on GPIO21 is unused |
+| FG inputs | Not implemented | 9 and 12; add capture only after electrical-level validation |
 
-Do not use the current movement sketch for a powered motor test until this
-audit is resolved in firmware and reviewed against the physical PCB. CI is a
-compile gate, not a hardware approval gate.
+The sketch has no QRE or XSHUT handling. Use it only for a lifted-wheel motor
+test. CI is a compile gate, not a hardware approval gate.
 
 ## I2C note
 

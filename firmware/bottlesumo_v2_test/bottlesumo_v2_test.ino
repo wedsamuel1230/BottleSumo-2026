@@ -10,8 +10,8 @@
  *   - The motor test is never started automatically. Send 'm', then 'y'.
  *   - Remove the mechanical load / lift the wheels before running the motor
  *     test. Keep the motor-driver 12 V side away from ESP32 GPIOs.
- *   - GPIO18 is the VL53L0X GPIO/interrupt input. XSHUT is fixed to 3V3 in
- *     the schematic, so this sketch does not drive XSHUT.
+ *   - XSHUT is pulled up to 3V3 by the v2 board, so this sketch does not
+ *     drive it.
  */
 
 #include <Arduino.h>
@@ -33,9 +33,8 @@ constexpr uint8_t MOTOR2_DIR_PIN = 14;
 
 constexpr uint8_t I2C_SCL_PIN = 16;
 constexpr uint8_t I2C_SDA_PIN = 17;
-constexpr uint8_t VL53L0X_GPIO_PIN = 18;
 
-constexpr uint8_t STATUS_LED_PIN = 40;
+constexpr uint8_t STATUS_LED_PINS[] = {48, 47};
 constexpr uint8_t BUTTON1_PIN = 41;
 constexpr uint8_t BUTTON2_PIN = 42;
 
@@ -102,11 +101,7 @@ void setup() {
   pinMode(BUTTON1_PIN, INPUT);
   pinMode(BUTTON2_PIN, INPUT);
 
-  pinMode(STATUS_LED_PIN, OUTPUT);
-  digitalWrite(STATUS_LED_PIN, LOW);
-
-  // GPIO18 is the VL53L0X GPIO/interrupt line. XSHUT is hard-wired to 3V3.
-  pinMode(VL53L0X_GPIO_PIN, INPUT);
+  for (auto pin : STATUS_LED_PINS) { pinMode(pin, OUTPUT); digitalWrite(pin, LOW); }
 
   attachInterrupt(digitalPinToInterrupt(MOTOR1_SIGNAL_PIN), motor1EdgeISR, RISING);
   attachInterrupt(digitalPinToInterrupt(MOTOR2_SIGNAL_PIN), motor2EdgeISR, RISING);
@@ -179,9 +174,8 @@ void loop() {
 
   if (millis() - lastLiveReportMs >= LIVE_REPORT_PERIOD_MS) {
     lastLiveReportMs = millis();
-    Serial.printf("[LIVE] BTN1=%d BTN2=%d VL53_GPIO18=%d | ",
-                  digitalRead(BUTTON1_PIN), digitalRead(BUTTON2_PIN),
-                  digitalRead(VL53L0X_GPIO_PIN));
+    Serial.printf("[LIVE] BTN1=%d BTN2=%d | ",
+                  digitalRead(BUTTON1_PIN), digitalRead(BUTTON2_PIN));
     printMotorSignals(false);
     printTofReading();
   }
@@ -196,7 +190,7 @@ void printHelp() {
   Serial.println(F("  i  scan I2C and read VL53L0X"));
   Serial.println(F("  t  read one VL53L0X distance"));
   Serial.println(F("  s  show motor signal levels and edge counters"));
-  Serial.println(F("  l  blink GPIO40 status LED"));
+  Serial.println(F("  l  blink status LEDs on GPIO48/47"));
   Serial.println(F("  m  arm the motor test; y starts it, x cancels/stops"));
   Serial.println();
 }
@@ -261,8 +255,7 @@ void printTofReading() {
     return;
   }
 
-  Serial.printf("VL53L0X: %u mm, GPIO18=%d\n", distanceMm,
-                digitalRead(VL53L0X_GPIO_PIN));
+  Serial.printf("VL53L0X: %u mm\n", distanceMm);
 }
 
 void printQreReadings() {
@@ -304,11 +297,11 @@ void printMotorSignals(bool resetEdgeCounters) {
 }
 
 void ledSelfTest() {
-  Serial.println(F("LED test on GPIO40..."));
+  Serial.println(F("LED test on GPIO48/47..."));
   for (uint8_t i = 0; i < 3; ++i) {
-    digitalWrite(STATUS_LED_PIN, HIGH);
+    for (auto pin : STATUS_LED_PINS) digitalWrite(pin, HIGH);
     delay(150);
-    digitalWrite(STATUS_LED_PIN, LOW);
+    for (auto pin : STATUS_LED_PINS) digitalWrite(pin, LOW);
     delay(150);
   }
 }

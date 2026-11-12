@@ -16,10 +16,11 @@ The purchased module marking still needs physical inspection.
 | Motor2 FG / PWM / DIR | 12 / 13 / 14 | Right wheel |
 | I2C SDA / SCL | 17 / 16 | Shared 400 kHz bus |
 | ToF XSHUT | 6 / 7 / 15 | Left / center / right; module pull-up release |
-| Original ToF GPIO | 18 | Input, not shared as three-head identification |
-| LED / start / stop | 40 / 41 / 42 | External button pull-downs; HIGH pressed |
+| LED / start / stop | 48 + 47 / 41 / 42 | LED2 + LED3 driven together; external button pull-downs; HIGH pressed |
 | USB | 19 / 20 | Native USB Serial/JTAG console and receiver bridge |
 
+LED1 on GPIO21 is not used by the firmware. The v2 board has no GPIO18
+connection; the three ToF heads use XSHUT only.
 Addresses 0x30/0x31/0x32 are assigned each boot. Disconnect fixed XSHUT-to-3V3
 connections. Do not use PSRAM-reserved GPIO35/36/37 for additional peripherals.
 Motor PWM is 20 kHz/8-bit; forward polarity must be measured for each motor.
@@ -27,5 +28,6 @@ FG remains disabled and diagnostic-only until voltage/pull-up/shaft reference
 are confirmed. See [motor reference](motor-24gp-2430-reference.md).
 
 Use [ESP-IDF operating guide](../competition/esp-idf-wireless.md). The older
-[N32R16 reference](esp32-s3-devkitc-1-n32r16-pinout.md) records historical schematic
-and legacy Arduino mismatches; those sketches are not the active board profile.
+[N32R16 reference](esp32-s3-devkitc-1-n32r16-pinout.md) records the historical
+schematic; the Arduino sketches now use the v2 signal map but are not the active
+board profile.

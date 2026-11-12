@@ -1,10 +1,11 @@
 #include <Arduino.h>
 
-#define LPWM 1
-#define LDIR 2
-#define RPWM 15
+#define LPWM 10
+#define LDIR 11
+#define RPWM 13
 #define RDIR 14
-#define LED1 17
+#define LED1 48
+#define LED2 47
 
 const uint8_t Loffset = 6;
 
@@ -50,7 +51,9 @@ void setup() {
     pinMode(RPWM, OUTPUT);
     pinMode(RDIR, OUTPUT);
     pinMode(LED1, OUTPUT);
+    pinMode(LED2, OUTPUT);
     digitalWrite(LED1, HIGH);
+    digitalWrite(LED2, HIGH);
 
 }
 
