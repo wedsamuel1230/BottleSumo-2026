@@ -40,7 +40,8 @@ calibration is lost.
 | `bottlesumo_arduino.ino` | `setup()`, the four FreeRTOS tasks, motor output, telemetry |
 | `config.h` | Every pin and compile-time constant |
 | `state_machine.h` | **The decision logic.** One `case` per state, one `change()` per transition, plus the history ring buffer |
-| `sensors.h` | QRE sampling, calibration math, NVS persistence, VL53L0X schedule |
+| `sensors.h` | QRE sampling, calibration persistence, VL53L0X schedule |
+| `qre.h` | Threshold logic and edge debounce; no hardware dependency, so it is host-testable |
 | `vl53l0x.h` / `vl53l0x.cpp` | VL53L0X driver ported to Arduino `Wire`; non-blocking single-shot API |
 | `web.h` / `web.cpp` | SoftAP, web UI, JSON API, OTA, UDP telemetry |
 | `telemetry.h` | 84-byte UDP snapshot, byte-compatible with `tools/bottlesumo_debug` |
@@ -49,15 +50,22 @@ calibration is lost.
 
 ## 3. Task split
 
-| Task | Core | Period | Owns |
-| --- | --- | --- | --- |
-| `control` | 1 (prio 20) | 5 ms | QRE ADC, state machine, PWM, telemetry, buttons |
-| `tof` | 0 (prio 6) | 1 ms poll | VL53L0X single-shot schedule (C–L–C–R) |
-| `web` | 0 (prio 3) | 5 ms | HTTP UI, UDP telemetry, OTA window |
-| `service` | 0 (prio 2) | event | Serial CLI, NVS writes |
+| Task | Core | Priority | Period | Owns |
+| --- | --- | --- | --- | --- |
+| `control` | 1 | 20 | 5 ms | QRE ADC, state machine, PWM, telemetry, buttons |
+| `tof` | 1 | 10 | 1 ms poll | VL53L0X single-shot schedule (C–L–C–R) |
+| `web` | 0 | 3 | 5 ms | HTTP UI, UDP telemetry, OTA window |
+| `service` | 0 | 2 | event | Serial CLI, NVS writes |
+
+Core 1 carries only the two hard real-time tasks, so a Wi-Fi burst or an HTTP
+response on core 0 can never delay a control tick or a ranging slot. Priorities
+are only comparable within a core, which is why the split matters more than the
+absolute numbers.
 
 The control task never touches I²C, Wi-Fi or NVS, and no web handler ever
-touches a motor. Motor ownership is single-writer.
+touches a motor. Motor ownership is single-writer: only `controlTask` calls
+`setWheel()`. Each task publishes its measured rate and remaining stack into
+`live`, and `GET /api/status` returns both, so a starved task is visible.
 
 ## 4. Wi-Fi and the web UI
 
@@ -68,7 +76,9 @@ On boot the robot opens a WPA2 access point:
 - URL `http://bottlesumo/` or `http://192.168.4.1/`
 
 The page has: live QRE bars with threshold markers and edge flags, ToF
-distances, calibration controls, drive tuning, the state-machine history table,
+distances, calibration controls, the per-channel manual threshold editor, the
+drive tuning sliders with a live summary of the opening, carry and edge
+settings, the state-machine history table, task rates and remaining stack,
 OTA, and a motor-test panel.
 
 ### Self-calibration
@@ -87,6 +97,20 @@ OTA, and a motor-test panel.
 
 Serial equivalent: `f` then `e` (3 s each), `q` for status, `x` to stop.
 
+### Manual threshold override
+
+The automatic midpoint is a convenience, not a requirement. Every channel has a
+checkbox, a number field and a polarity selector under **QRE 手動閾值**, next to
+its live raw ADC value. Tick a channel and it stops using the calibrated
+midpoint entirely: the threshold and polarity you typed are used instead, they
+persist in NVS, and the channel no longer has to pass the 300-count gap test.
+This is the answer to a surface where the auto calibration is wrong and there is
+no time to fix it — the same failure that cost last year's round.
+
+`POST /api/manual` takes `{"mask":0..15,"high":0..15,"t0".."t3":1..4094}`.
+`mask` bit i enables manual mode on channel i, `high` bit i sets its polarity.
+Send `mask:0` to return every channel to automatic.
+
 ### Drive tuning ("voltage")
 
 `powerScale` is the master knob: 100 = full configured PWM, 50 = half. Every
@@ -94,6 +118,16 @@ commanded PWM is multiplied by it, so one slider changes the effective motor
 voltage without recompiling. Individual levels (push, approach near/far, search
 turn, search advance, escape, turn, unstick, steering correction) are separate
 sliders.
+
+Three groups are also runtime-tunable, which is the point: last year's numbers
+were correct for one table and one battery, and there was no way to adjust them
+trackside.
+
+| Group | Fields |
+| --- | --- |
+| Opening | `openingEnabled`, `openingPwm`, `openingForwardMs`, `openingTurnMs`, `openingTurnDir`, `openingForward2Ms`, `openingAbortMm` |
+| Carry | `carryEnabled`, `carryAfterMs`, `carryPwm`, `carryBias`, `carrySweepMs`, `carryMaxMs` |
+| Edge | `edgeDebounceMs`, `maxEscapesPerRound` |
 
 Changes are accepted only while stopped, apply immediately, and persist in NVS.
 
@@ -103,8 +137,12 @@ Changes are accepted only while stopped, apply immediately, and persist in NVS.
 
 ```cpp
 enum class State : uint8_t { Stopped, Starting, Search, Approach, Push,
-                             Escape, Turn, Hold, Unstick, Updating, Fault };
+                             Escape, Turn, Hold, Unstick,
+                             Opening = 26, Carry = 27, Updating = 30, Fault = 31 };
 ```
+
+`Opening` and `Carry` sit outside 0..24 because those values are the display
+codes the desktop telemetry tool already understands.
 
 - Every state has exactly one `case` in `Machine::tick()`.
 - Every transition goes through `change(next, reason)`, which appends to a
@@ -117,9 +155,52 @@ enum class State : uint8_t { Stopped, Starting, Search, Approach, Push,
 - Drive levels live in `Tuning` and are runtime-editable; the defaults in the
   struct are only a starting point.
 
-`tests/arduino-state-machine-test.cpp` asserts the transitions, the priority
-order, the hysteresis-free edge reflex, rollover safety, the history buffer and
-that `powerScale` actually reaches the wheel commands.
+### Opening run
+
+The start box is fixed by the rules, so a short open-loop script beats
+searching. After the 1 s start delay the robot drives straight for
+`openingForwardMs`, pivots `openingTurnMs` in `openingTurnDir`, then drives
+straight for `openingForward2Ms`. On last year's table that sequence already
+arrived next to the bottle.
+
+Two guards keep the open loop honest. A centre ToF reading inside
+`openingAbortMm` (300 mm) ends the script early and hands over to normal
+approach, so it cannot drive past the bottle. A confirmed edge during the
+opening goes to `Escape` like any other state; the opening is not resumed
+afterwards.
+
+### Carry
+
+Contact alone puts the bottle in front of the robot; the opponent can still
+line up a clean approach from the side. After `carryAfterMs` of contact, `Carry`
+runs both wheels forward at `carryPwm` with a differential that flips every
+`carrySweepMs`, so the robot arcs and drags the bottle sideways. The left and
+right ToF readings pull the arc back toward the bottle when it drifts off
+centre, which is what keeps contact through the sweep. It leaves after
+`carryMaxMs` and returns to `Push`, so it cannot circle forever.
+
+The 6 s push budget is measured from the first contact of an engagement, and
+survives the `Push` → `Carry` → `Push` cycle.
+
+### Edge robustness
+
+Four layers, in the order they act:
+
+1. Auto calibration finds the midpoint between the floor and void clusters.
+2. `EdgeFilter` requires the raw bit to hold for `edgeDebounceMs` before the
+   state machine sees it, so one noisy sample cannot trigger an escape.
+3. Per-channel manual thresholds override the midpoint entirely, with their own
+   polarity, set from the web UI.
+4. `escapeCount` is reset every round; past `maxEscapesPerRound` the machine
+   enters `Fault` instead of reversing again. A broken threshold then shows up
+   as a blinking LED and a fault on the page rather than a robot that reverses
+   for the rest of the round.
+
+`tests/arduino-state-machine-test.cpp` holds 120 assertions covering the
+transitions, the priority order, the opening script and its early abort, the
+carry arc and its sweep flip, the push budget across carry cycles, the escape
+budget, the debounce filter, manual thresholds and polarity, rollover safety,
+the history buffer, and that `powerScale` reaches the wheel commands.
 
 ## 6. OTA
 

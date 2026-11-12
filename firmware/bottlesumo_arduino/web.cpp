@@ -80,6 +80,8 @@ static const char *stateNameFromDisplay(uint8_t s) {
     case DISPLAY_CAL_FLOOR:      return "calibrate: floor";
     case DISPLAY_CAL_VOID:       return "calibrate: void";
     case DISPLAY_UPDATING:       return "ota updating";
+    case DISPLAY_OPENING:        return "opening run";
+    case DISPLAY_CARRY:          return "carry";
     case 25:                     return "fault";
     default: break;
   }
@@ -119,6 +121,7 @@ button{background:#233042;color:var(--fg);border:1px solid var(--line);border-ra
 button:hover{border-color:var(--acc)}button:disabled{opacity:.45;cursor:not-allowed}
 button.primary{background:#1f6feb;border-color:#1f6feb}button.danger{background:#5c1f24;border-color:#8c2f33}
 input[type=number],input[type=password],input[type=text]{background:#0d1117;border:1px solid var(--line);color:var(--fg);border-radius:5px;padding:4px 6px;width:76px}
+select{background:#0d1117;border:1px solid var(--line);color:var(--fg);border-radius:5px;padding:4px 6px}
 input[type=range]{width:100%}label{color:var(--dim);font-size:12px;display:block;margin-top:6px}
 .bar{height:16px;background:#0d1117;border-radius:4px;position:relative;overflow:hidden;margin:2px 0}
 .bar>i{position:absolute;left:0;top:0;bottom:0;background:var(--acc);display:block}
@@ -158,6 +161,17 @@ th{color:var(--dim);font-weight:500}
   <div style="margin-top:8px"><button class="primary" id="saveTuning">套用並儲存</button>
   <button id="resetTuning">回復預設</button></div>
   <div class="hint">只有在停止狀態才能改。改動即時生效並寫入 NVS，重開機仍保留。</div>
+</section>
+
+<section><h2>QRE 手動閾值（覆寫自動）</h2>
+  <div id="manualTable"></div>
+  <div style="margin-top:8px"><button class="primary" id="saveManual">套用手動閾值</button>
+  <button id="clearManual">全部回復自動</button></div>
+  <div class="hint">勾選＝該通道停用自動中點，改用你打的數值。「邊界」指越界時 ADC 變大還是變小。這是去年「threshold 錯又無得調」的解法：任何時候都可以手動釘死，並即時見到 RAW 值。</div>
+</section>
+
+<section><h2>開局腳本 / 帶樽 / 邊緣</h2>
+  <div id="strategy" class="hint">—</div>
 </section>
 
 <section><h2>狀態機</h2>
@@ -216,14 +230,62 @@ function drawCal(d){
  $('calTable').innerHTML=h;
  $('calState').textContent=d.calibrated?(d.floorCaptured?'已校準':'已有落差'):'未校準';
 }
+const TSPEC=[
+ ['pushPwm',0,255,1,'推樽 PWM'],
+ ['approachNear',0,255,1,'接近（近）PWM'],
+ ['approachFar',0,255,1,'接近（遠）PWM'],
+ ['searchTurn',0,255,1,'搜尋轉向 PWM'],
+ ['searchAdvance',0,255,1,'搜尋前進 PWM'],
+ ['escapePwm',0,255,1,'逃離邊緣 PWM'],
+ ['turnPwm',0,255,1,'轉向 PWM'],
+ ['unstickPwm',0,255,1,'脫困 PWM'],
+ ['pushSteerMax',0,100,1,'推樽修正上限'],
+ ['openingEnabled',0,1,1,'開局腳本 0/1'],
+ ['openingPwm',0,255,1,'開局 PWM'],
+ ['openingForwardMs',0,4000,10,'開局 直行 ms'],
+ ['openingTurnMs',0,1500,10,'開局 轉向 ms'],
+ ['openingTurnDir',-1,1,2,'開局 方向 -1左/+1右'],
+ ['openingForward2Ms',0,4000,10,'開局 第二段直行 ms'],
+ ['openingAbortMm',0,900,10,'開局 提早接手距離 mm'],
+ ['carryEnabled',0,1,1,'帶樽 0/1'],
+ ['carryAfterMs',0,3000,50,'帶樽 接觸多久後開始 ms'],
+ ['carryPwm',0,255,1,'帶樽 PWM'],
+ ['carryBias',0,120,1,'帶樽 轉向差'],
+ ['carrySweepMs',100,3000,50,'帶樽 左右切換 ms'],
+ ['carryMaxMs',500,8000,100,'帶樽 最長 ms'],
+ ['edgeDebounceMs',0,100,5,'邊緣去抖 ms'],
+ ['maxEscapesPerRound',0,30,1,'每局最多逃離（0=不限）'],
+ ['maxPwm',1,255,1,'PWM 上限']
+];
+const TDEF={powerScale:100,pushPwm:175,approachNear:115,approachFar:145,searchTurn:80,searchAdvance:100,escapePwm:105,turnPwm:85,unstickPwm:100,pushSteerMax:25,maxPwm:255,openingEnabled:1,openingPwm:140,openingForwardMs:1400,openingTurnMs:380,openingTurnDir:1,openingForward2Ms:1200,openingAbortMm:300,carryEnabled:1,carryAfterMs:700,carryPwm:120,carryBias:45,carrySweepMs:900,carryMaxMs:4000,edgeDebounceMs:25,maxEscapesPerRound:12};
 function drawTuning(d){
- let h='';for(const k of Object.keys(d)){if(k==='powerScale')continue;
-  h+='<label>'+k+' (<span id="v_'+k+'">'+d[k]+'</span>)</label><input type="range" min="0" max="255" value="'+d[k]+'" data-k="'+k+'">';}
+ let h='';for(const [k,lo,hi,st,lab] of TSPEC){
+  if(!(k in d))continue;
+  h+='<label>'+lab+' (<span id="v_'+k+'">'+d[k]+'</span>)</label>'+
+     '<input type="range" min="'+lo+'" max="'+hi+'" step="'+st+'" value="'+d[k]+'" data-k="'+k+'">';}
  $('tuning').innerHTML=h;
  $('tuning').querySelectorAll('input').forEach(i=>{
    i.oninput=()=>{tuning[i.dataset.k]=+i.value;$('v_'+i.dataset.k).textContent=i.value;};
-   i.onchange=()=>{tuning[i.dataset.k]=+i.value;};
  });
+}
+function drawStrategy(d){
+ const on=x=>x?'<span class="ok">開</span>':'<span class="k">關</span>';
+ $('strategy').innerHTML=
+  '開局：'+on(d.openingEnabled)+' 直行 '+d.openingForwardMs+'ms → 轉 '+(d.openingTurnDir>0?'右':'左')+' '+d.openingTurnMs+'ms → 直行 '+d.openingForward2Ms+'ms；'+d.openingAbortMm+'mm 內提早接手<br>'+
+  '帶樽：'+on(d.carryEnabled)+' 接觸 '+d.carryAfterMs+'ms 後起弧，'+d.carrySweepMs+'ms 換邊，最長 '+d.carryMaxMs+'ms<br>'+
+  '邊緣：去抖 '+d.edgeDebounceMs+'ms，每局上限 '+d.maxEscapesPerRound+' 次';
+}
+function drawManual(d){
+ let h='';
+ for(let i=0;i<4;i++){
+  h+='<div class="row"><span class="k">'+QN[i]+' <span class="flag'+(d.manual[i]?' on':'')+'">手</span></span><span class="v">'+
+     '<input type="checkbox" data-m="'+i+'" '+(d.manual[i]?'checked':'')+'> '+
+     '<input type="number" min="1" max="4094" value="'+(d.manualThreshold[i]||d.thresholds[i])+'" data-t="'+i+'"> '+
+     '<select data-h="'+i+'"><option value="1"'+(d.manualHigh[i]?' selected':'')+'>邊界=高</option>'+
+     '<option value="0"'+(d.manualHigh[i]?'':' selected')+'>邊界=低</option></select></span></div>';
+ }
+ h+='<div class="hint">自動閾值：'+d.thresholds.join(' / ')+'</div>';
+ $('manualTable').innerHTML=h;
 }
 function drawHistory(h){
  let rows='';for(const t of h){rows+='<tr><td>'+t.at+'</td><td>'+t.from+' → '+t.to+'</td><td>'+t.reason+'</td><td>0x'+t.edges.toString(16)+'</td></tr>';}
@@ -239,15 +301,29 @@ async function refresh(){
  $('benchState').textContent=s.bench?'已啟用（停止時可驅動）':'未啟用（開機按住 BUTTON2）';
  $('startBtn').disabled=!s.canStart;$('stopBtn').disabled=!s.active;
  const r=await api('/api/raw');if(r)drawQre(r);
- const c=await api('/api/config');if(c){drawCal(c);drawTuning(c.tuning);tuning=c.tuning;$('powerScale').value=tuning.powerScale;$('psVal').textContent=tuning.powerScale;}
+ const c=await api('/api/config');if(c){drawCal(c);drawTuning(c.tuning);drawStrategy(c.tuning);tuning=c.tuning;$('powerScale').value=tuning.powerScale;$('psVal').textContent=tuning.powerScale;}
+ if(r)drawManual(r);
  const hh=await api('/api/history');if(hh)drawHistory(hh);
 }
 $('powerScale').oninput=e=>{$('psVal').textContent=e.target.value;tuning.powerScale=+e.target.value;};
 $('saveTuning').onclick=async()=>{tuning.powerScale=+$('powerScale').value;const j=await api('/api/tuning',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(tuning)});log('tuning '+(j?'已儲存':'被拒絕'));};
-$('resetTuning').onclick=()=>{tuning={powerScale:100,pushPwm:175,approachNear:115,approachFar:145,searchTurn:80,searchAdvance:100,escapePwm:105,turnPwm:85,unstickPwm:100,pushSteerMax:25,maxPwm:255};$('powerScale').value=100;$('psVal').textContent=100;drawTuning(tuning);};
+$('resetTuning').onclick=()=>{tuning={...TDEF};$('powerScale').value=100;$('psVal').textContent=100;drawTuning(tuning);drawStrategy(tuning);};
 $('calFloor').onclick=()=>api('/api/calibrate/floor',{method:'POST'}).then(()=>log('floor 取樣開始'));
 $('calVoid').onclick=()=>api('/api/calibrate/void',{method:'POST'}).then(()=>log('void 取樣開始'));
 $('calCancel').onclick=()=>api('/api/calibrate/cancel',{method:'POST'});
+$('saveManual').onclick=async()=>{
+ const body={mask:0,high:0};
+ for(let i=0;i<4;i++){
+  const on=$('manualTable').querySelector('[data-m="'+i+'"]').checked;
+  const tv=+$('manualTable').querySelector('[data-t="'+i+'"]').value;
+  const hi=+$('manualTable').querySelector('[data-h="'+i+'"]').value;
+  body['t'+i]=tv;
+  if(on){body.mask|=1<<i;if(hi)body.high|=1<<i;}
+ }
+ const j=await api('/api/manual',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+ log('手動閾值 '+(j?'已套用':'被拒絕'));
+};
+$('clearManual').onclick=async()=>{const j=await api('/api/manual',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mask:0,high:0,t0:0,t1:0,t2:0,t3:0})});log('手動閾值 '+(j?'已清除':'被拒絕'));};
 $('startBtn').onclick=()=>api('/api/start',{method:'POST'});
 $('stopBtn').onclick=()=>api('/api/stop',{method:'POST'});
 $('clearFault').onclick=()=>api('/api/fault-clear',{method:'POST'});
@@ -302,6 +378,9 @@ static void handleStatus() {
   const uint32_t bootId = live.bootId;
   const uint8_t progress = live.otaProgress;
   const uint8_t clients = live.wifiClients;
+  const uint8_t escapes = live.escapeCount;
+  uint16_t stack[4] = {}, hz[4] = {};
+  for (uint8_t i = 0; i < 4; ++i) { stack[i] = live.stackFree[i]; hz[i] = live.taskHz[i]; }
   unlockConfig();
   j += ",\"calibrated\":" + String(calibrated ? 1 : 0);
   j += ",\"bench\":" + String(bench ? 1 : 0);
@@ -311,6 +390,11 @@ static void handleStatus() {
   j += ",\"bootVerified\":" + String(bootOk ? 1 : 0);
   j += ",\"otaProgress\":" + String(progress);
   j += ",\"wifiClients\":" + String(clients);
+  j += ",\"escapes\":" + String(escapes);
+  j += ",\"stack\":[" + String(stack[0]) + "," + String(stack[1]) + "," +
+       String(stack[2]) + "," + String(stack[3]) + "]";
+  j += ",\"hz\":[" + String(hz[0]) + "," + String(hz[1]) + "," +
+       String(hz[2]) + "," + String(hz[3]) + "]";
   j += ",\"bootId\":" + String(bootId);
   j += ",\"stateName\":\"" + String(stateNameFromDisplay(t.state)) + "\"";
   j += ",\"active\":" + String(t.state != 0 ? 1 : 0);
@@ -343,6 +427,18 @@ static void handleRaw() {
        String(live.calibration.separationRatio(1), 2) + "," +
        String(live.calibration.separationRatio(2), 2) + "," +
        String(live.calibration.separationRatio(3), 2) + "]";
+  j += ",\"manual\":[" + String(live.calibration.manual(0) ? 1 : 0) + "," +
+       String(live.calibration.manual(1) ? 1 : 0) + "," +
+       String(live.calibration.manual(2) ? 1 : 0) + "," +
+       String(live.calibration.manual(3) ? 1 : 0) + "]";
+  j += ",\"manualHigh\":[" + String(live.calibration.manualHigh & 1 ? 1 : 0) + "," +
+       String(live.calibration.manualHigh & 2 ? 1 : 0) + "," +
+       String(live.calibration.manualHigh & 4 ? 1 : 0) + "," +
+       String(live.calibration.manualHigh & 8 ? 1 : 0) + "]";
+  j += ",\"manualThreshold\":[" + String(live.calibration.manualThreshold[0]) + "," +
+       String(live.calibration.manualThreshold[1]) + "," +
+       String(live.calibration.manualThreshold[2]) + "," +
+       String(live.calibration.manualThreshold[3]) + "]";
   j += ",\"calibrated\":" + String(live.calibrated ? 1 : 0);
   j += ",\"floorCaptured\":" + String(live.floorCaptured ? 1 : 0);
   j += ",\"calMode\":\"" + String(live.calibrationMode ? live.calibrationMode : '0') + "\"";
@@ -372,12 +468,39 @@ static void handleConfig() {
        ",\"turnPwm\":" + String(t.turnPwm) +
        ",\"unstickPwm\":" + String(t.unstickPwm) +
        ",\"pushSteerMax\":" + String(t.pushSteerMax) +
-       ",\"maxPwm\":" + String(t.maxPwm);
+       ",\"maxPwm\":" + String(t.maxPwm) +
+       ",\"openingEnabled\":" + String(t.openingEnabled ? 1 : 0) +
+       ",\"openingPwm\":" + String(t.openingPwm) +
+       ",\"openingForwardMs\":" + String(t.openingForwardMs) +
+       ",\"openingTurnMs\":" + String(t.openingTurnMs) +
+       ",\"openingTurnDir\":" + String(t.openingTurnDir) +
+       ",\"openingForward2Ms\":" + String(t.openingForward2Ms) +
+       ",\"openingAbortMm\":" + String(t.openingAbortMm) +
+       ",\"carryEnabled\":" + String(t.carryEnabled ? 1 : 0) +
+       ",\"carryAfterMs\":" + String(t.carryAfterMs) +
+       ",\"carryPwm\":" + String(t.carryPwm) +
+       ",\"carryBias\":" + String(t.carryBias) +
+       ",\"carrySweepMs\":" + String(t.carrySweepMs) +
+       ",\"carryMaxMs\":" + String(t.carryMaxMs) +
+       ",\"edgeDebounceMs\":" + String(t.edgeDebounceMs) +
+       ",\"maxEscapesPerRound\":" + String(t.maxEscapesPerRound);
   j += "}";
   j += ",\"quality\":[" + String(c.quality(0)) + "," + String(c.quality(1)) + "," +
        String(c.quality(2)) + "," + String(c.quality(3)) + "]";
   j += ",\"ratio\":[" + String(c.separationRatio(0), 2) + "," + String(c.separationRatio(1), 2) + "," +
        String(c.separationRatio(2), 2) + "," + String(c.separationRatio(3), 2) + "]";
+  j += ",\"manual\":[" + String(live.calibration.manual(0) ? 1 : 0) + "," +
+       String(live.calibration.manual(1) ? 1 : 0) + "," +
+       String(live.calibration.manual(2) ? 1 : 0) + "," +
+       String(live.calibration.manual(3) ? 1 : 0) + "]";
+  j += ",\"manualHigh\":[" + String(live.calibration.manualHigh & 1 ? 1 : 0) + "," +
+       String(live.calibration.manualHigh & 2 ? 1 : 0) + "," +
+       String(live.calibration.manualHigh & 4 ? 1 : 0) + "," +
+       String(live.calibration.manualHigh & 8 ? 1 : 0) + "]";
+  j += ",\"manualThreshold\":[" + String(live.calibration.manualThreshold[0]) + "," +
+       String(live.calibration.manualThreshold[1]) + "," +
+       String(live.calibration.manualThreshold[2]) + "," +
+       String(live.calibration.manualThreshold[3]) + "]";
   j += ",\"calibrated\":" + String(live.calibrated ? 1 : 0);
   j += ",\"floorCaptured\":" + String(live.floorCaptured ? 1 : 0);
   j += ",\"wifi\":{";
@@ -414,7 +537,12 @@ static bool tuningFromJson(const String &body, Tuning &out) {
   // Minimal, dependency-free JSON extraction for flat numeric fields.
   static const char *keys[] = {"powerScale", "pushPwm", "approachNear", "approachFar",
                                "searchTurn", "searchAdvance", "escapePwm", "turnPwm",
-                               "unstickPwm", "pushSteerMax", "maxPwm"};
+                               "unstickPwm", "pushSteerMax", "maxPwm",
+                               "openingEnabled", "openingPwm", "openingForwardMs",
+                               "openingTurnMs", "openingTurnDir", "openingForward2Ms",
+                               "openingAbortMm", "carryEnabled", "carryAfterMs",
+                               "carryPwm", "carryBias", "carrySweepMs", "carryMaxMs",
+                               "edgeDebounceMs", "maxEscapesPerRound"};
   Tuning t = out;
   for (const char *key : keys) {
     const String needle = String("\"") + key + "\"";
@@ -437,6 +565,21 @@ static bool tuningFromJson(const String &body, Tuning &out) {
     else if (String(key) == "unstickPwm") t.unstickPwm = uint16_t(constrain(value, 0, 255));
     else if (String(key) == "pushSteerMax") t.pushSteerMax = int16_t(constrain(value, 0, 100));
     else if (String(key) == "maxPwm") t.maxPwm = uint16_t(constrain(value, 1, 255));
+    else if (String(key) == "openingEnabled") t.openingEnabled = value != 0;
+    else if (String(key) == "openingPwm") t.openingPwm = uint16_t(constrain(value, 0, 255));
+    else if (String(key) == "openingForwardMs") t.openingForwardMs = uint16_t(constrain(value, 0, 4000));
+    else if (String(key) == "openingTurnMs") t.openingTurnMs = uint16_t(constrain(value, 0, 1500));
+    else if (String(key) == "openingTurnDir") t.openingTurnDir = value < 0 ? -1 : 1;
+    else if (String(key) == "openingForward2Ms") t.openingForward2Ms = uint16_t(constrain(value, 0, 4000));
+    else if (String(key) == "openingAbortMm") t.openingAbortMm = uint16_t(constrain(value, 0, 900));
+    else if (String(key) == "carryEnabled") t.carryEnabled = value != 0;
+    else if (String(key) == "carryAfterMs") t.carryAfterMs = uint16_t(constrain(value, 0, 3000));
+    else if (String(key) == "carryPwm") t.carryPwm = uint16_t(constrain(value, 0, 255));
+    else if (String(key) == "carryBias") t.carryBias = int16_t(constrain(value, -120, 120));
+    else if (String(key) == "carrySweepMs") t.carrySweepMs = uint16_t(constrain(value, 50, 3000));
+    else if (String(key) == "carryMaxMs") t.carryMaxMs = uint16_t(constrain(value, 200, 8000));
+    else if (String(key) == "edgeDebounceMs") t.edgeDebounceMs = uint8_t(constrain(value, 0, 100));
+    else if (String(key) == "maxEscapesPerRound") t.maxEscapesPerRound = uint8_t(constrain(value, 0, 30));
   }
   out = t;
   return true;
@@ -495,6 +638,44 @@ static void handleWifi() {
 // ---------------------------------------------------------------------------
 static bool otaActive = false;
 static size_t otaReceived = 0;
+
+static void handleManual() {
+  if (!robotStopped()) { sendReject(409, "只可在停止狀態修改"); return; }
+  const String body = server.arg("plain");
+  auto grab = [&](const char *key, long &out) {
+    const String needle = String("\"") + key + "\"";
+    const int at = body.indexOf(needle);
+    if (at < 0) return false;
+    const int colon = body.indexOf(':', at + needle.length());
+    if (colon < 0) return false;
+    int end = colon + 1;
+    if (end < body.length() && body[end] == '-') end++;
+    const int digits = end;
+    while (end < body.length() && isDigit(body[end])) end++;
+    if (end == digits) return false;
+    out = body.substring(colon + 1, end).toInt();
+    return true;
+  };
+  long mask = -1, high = -1, raw[4] = {-1, -1, -1, -1};
+  if (!grab("mask", mask) || !grab("high", high)) { sendReject(400, "JSON 解析失敗"); return; }
+  grab("t0", raw[0]); grab("t1", raw[1]); grab("t2", raw[2]); grab("t3", raw[3]);
+
+  lockConfig();
+  QreCalibration cal = live.calibration;
+  cal.manualMask = uint8_t(mask & 0x0F);
+  cal.manualHigh = uint8_t(high & 0x0F);
+  for (uint8_t i = 0; i < 4; ++i) {
+    if (raw[i] > 0) cal.manualThreshold[i] = uint16_t(constrain(raw[i], 1, 4094));
+    else if (!cal.manual(i)) cal.manualThreshold[i] = cal.threshold(i);
+  }
+  if (!cal.valid()) { unlockConfig(); sendReject(400, "閾值無效：先做一次自動校準，或四個通道全部手動"); return; }
+  live.calibration = cal;
+  live.calibrated = true;
+  if (cal.manualMask) live.floorCaptured = true;
+  unlockConfig();
+  if (!saveCalibration(cal)) { sendReject(500, "NVS 寫入失敗"); return; }
+  sendJson("{\"ok\":1}");
+}
 
 static void handleOtaUpload() {
   HTTPUpload &upload = server.upload();
@@ -569,6 +750,7 @@ void webBegin() {
   server.on("/api/config", HTTP_GET, handleConfig);
   server.on("/api/history", HTTP_GET, handleHistory);
   server.on("/api/tuning", HTTP_POST, handleTuning);
+  server.on("/api/manual", HTTP_POST, handleManual);
   server.on("/api/wifi", HTTP_POST, handleWifi);
   server.on("/api/calibrate/floor", HTTP_POST, [] { handleCalibrate('f'); });
   server.on("/api/calibrate/void", HTTP_POST, [] { handleCalibrate('e'); });
@@ -599,8 +781,10 @@ void webBegin() {
 void webTask(void *arg) {
   (void)arg;
   TickType_t wake = xTaskGetTickCount();
+  TaskHealth health;
   while (true) {
     server.handleClient();
+    health.sample(2, millis());
     lockConfig();
     live.webTicks++;
     unlockConfig();

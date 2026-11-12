@@ -55,6 +55,9 @@ struct Live {
   uint8_t otaProgress = 0;
   uint8_t wifiClients = 0;
   uint32_t webTicks = 0;
+  uint8_t escapeCount = 0;        // mirrored from the machine for the UI
+  uint16_t stackFree[4] = {};     // control, tof, web, service (bytes left)
+  uint16_t taskHz[4] = {};        // measured ticks per second, 0 = not yet
   History history{};
 };
 
@@ -65,6 +68,28 @@ extern SemaphoreHandle_t configMutex;
 
 inline void lockConfig() { if (configMutex) xSemaphoreTake(configMutex, portMAX_DELAY); }
 inline void unlockConfig() { if (configMutex) xSemaphoreGive(configMutex); }
+
+// Per-task health, published into `live` once a second so the web UI can show
+// whether a task is running at its design rate and how much stack is left. A
+// starved or dying task is otherwise invisible from the outside.
+struct TaskHealth {
+  uint32_t windowStart = 0;
+  uint32_t ticks = 0;
+
+  void sample(uint8_t slot, uint32_t now) {
+    ++ticks;
+    if (now - windowStart < 1000) return;
+    const uint32_t elapsed = now - windowStart;
+    const uint16_t hz = uint16_t(elapsed ? (ticks * 1000u) / elapsed : 0);
+    const uint16_t stack = uint16_t(uxTaskGetStackHighWaterMark(nullptr));
+    lockConfig();
+    live.taskHz[slot] = hz;
+    live.stackFree[slot] = stack;
+    unlockConfig();
+    ticks = 0;
+    windowStart = now;
+  }
+};
 
 inline void sendRequest(Command command, int16_t a = 0, int16_t b = 0) {
   if (!requestQueue) return;

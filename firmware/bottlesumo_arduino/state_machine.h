@@ -32,8 +32,10 @@ enum class State : uint8_t {
   Hold     = 7,
   Unstick  = 8,
   // 9..24 are reserved for display-only codes (search phases, bench,
-  // calibration, OTA). Fault and Updating keep values outside that range so a
-  // state can never be mistaken for a display code.
+  // calibration, OTA). Opening/Carry/Fault/Updating keep values outside that
+  // range so a state can never be mistaken for a display code.
+  Opening  = 26,  // scripted opening run: straight, 60 deg, straight
+  Carry    = 27,  // slow arc while pushing: drag the bottle away
   Updating = 30,
   Fault    = 31,
 };
@@ -59,6 +61,8 @@ inline const char *stateName(State s) {
     case State::Turn:     return "turn";
     case State::Hold:     return "hold";
     case State::Unstick:  return "unstick";
+    case State::Opening:  return "opening";
+    case State::Carry:    return "carry";
     case State::Fault:    return "fault";
     case State::Updating: return "updating";
   }
@@ -80,6 +84,8 @@ enum class Reason : uint8_t {
   StaleData, SensorFault, FaultCleared,
   CalibrationDone, CalibrationFailed, CalibrationCancelled,
   OtaStart, OtaDone, OtaFailed,
+  OpeningDone, OpeningAbort, CarryStart, CarryDone, BottleLost,
+  EscapeBudget,
 };
 
 inline const char *reasonName(Reason r) {
@@ -115,6 +121,12 @@ inline const char *reasonName(Reason r) {
     case Reason::OtaStart:             return "ota start";
     case Reason::OtaDone:              return "ota done";
     case Reason::OtaFailed:            return "ota failed";
+    case Reason::OpeningDone:          return "opening done";
+    case Reason::OpeningAbort:         return "opening abort: bottle in range";
+    case Reason::CarryStart:           return "carry start";
+    case Reason::CarryDone:            return "carry done";
+    case Reason::BottleLost:           return "bottle lost";
+    case Reason::EscapeBudget:         return "escape budget exhausted";
   }
   return "?";
 }
@@ -144,6 +156,32 @@ struct Tuning {
   uint16_t unstickPwm    = 100;  // reverse out of a long push
   int16_t  pushSteerMax  = 25;   // max differential correction while pushing
   uint16_t maxPwm        = 255;  // absolute clamp, never above 255
+
+  // ---- Opening run -------------------------------------------------------
+  // The start box is fixed by the rules, so a short open-loop script is more
+  // reliable than searching: straight, pivot ~60 deg, straight again lands the
+  // robot next to the bottle. Measured on last year's table; re-time it here.
+  bool     openingEnabled    = true;
+  uint16_t openingPwm        = 140;
+  uint16_t openingForwardMs  = 1400;  // leg 1
+  uint16_t openingTurnMs     = 380;   // ~60 deg at openingPwm, measure yours
+  int8_t   openingTurnDir    = 1;     // +1 = right, -1 = left
+  uint16_t openingForward2Ms = 1200;  // leg 2
+  uint16_t openingAbortMm    = 300;   // centre sees the bottle this close -> stop the script
+
+  // ---- Carry -------------------------------------------------------------
+  // After contact, arc slowly instead of pushing straight, so the bottle is
+  // dragged along and the opponent cannot line up a clean approach.
+  bool     carryEnabled  = true;
+  uint16_t carryAfterMs  = 700;   // contact time before the arc starts
+  uint16_t carryPwm      = 120;
+  int16_t  carryBias     = 45;    // differential that makes the arc
+  uint16_t carrySweepMs  = 900;   // swap the arc side this often
+  uint16_t carryMaxMs    = 4000;  // leave Carry and go back to Push
+
+  // ---- Edge robustness ---------------------------------------------------
+  uint8_t  edgeDebounceMs     = 25;  // a raw edge must persist this long
+  uint8_t  maxEscapesPerRound = 12;  // 0 = unlimited; above this -> Fault
 
   // Scales the magnitude and keeps the sign, so steering corrections survive.
   int16_t apply(int16_t pwm) const {
@@ -204,6 +242,11 @@ struct Machine {
   bool clearing = false;
   int8_t escapeDirection = 0;
   int8_t turnDirection = 1;
+  uint8_t escapeCount = 0;      // per round; a runaway count means the
+                                // threshold is wrong, not that the table moved
+  uint32_t contactStart = 0;    // first contact of this engagement, survives
+                                // a Push <-> Carry cycle
+  uint8_t carryCycles = 0;
 
   Tuning tuning;
   History history;
@@ -229,6 +272,9 @@ struct Machine {
   void startRound() {
     if (state != State::Stopped) return;
     roundStart = now_;
+    escapeCount = 0;
+    carryCycles = 0;
+    contactStart = now_;
     change(State::Starting, Reason::ButtonStart);
   }
 
@@ -273,7 +319,14 @@ struct Machine {
     if (edges_) {
       const int8_t direction = front ? -1 : 1;
       if (state != State::Escape) {
-        holdAfterEscape = (state == State::Push || state == State::Hold);
+        // A per-round budget turns "the threshold is wrong" into a visible
+        // fault instead of an endless reverse loop.
+        if (tuning.maxEscapesPerRound && escapeCount >= tuning.maxEscapesPerRound) {
+          faultRound(Reason::EscapeBudget);
+          return {};
+        }
+        ++escapeCount;
+        holdAfterEscape = (state == State::Push || state == State::Carry || state == State::Hold);
         escapeDirection = direction;
         turnDirection = (edges_ & 0x05) ? 1 : -1;
         change(State::Escape, Reason::EdgeSeen);
@@ -288,8 +341,19 @@ struct Machine {
     switch (state) {
       case State::Starting:
         if (now_ - roundStart < START_DELAY_MS) return {};
+        if (tuning.openingEnabled) {
+          // The opening is timed from the moment it starts, not from the button.
+          change(State::Opening, Reason::StartDelayDone);
+          return openingDrive(r);
+        }
         change(State::Search, Reason::StartDelayDone, false);
         return behave(r);
+
+      case State::Opening:
+        return openingDrive(r);
+
+      case State::Carry:
+        return carryDrive(r);
 
       case State::Escape: {
         if (now_ - stateStart >= 300) { stopRound(Reason::EscapeTimeout); return {}; }
@@ -328,10 +392,14 @@ struct Machine {
 
       case State::Push: {
         if (!r[1].mm) { change(State::Hold, Reason::LostCenterTarget); return {}; }
-        if (now_ - stateStart >= 6000) {
+        if (now_ - contactStart >= 6000) {
           change(State::Unstick, Reason::PushTimeUp);
           const int16_t pwm = -tuning.apply(tuning.unstickPwm);
           return Drive{pwm, pwm};
+        }
+        if (tuning.carryEnabled && now_ - stateStart >= tuning.carryAfterMs) {
+          change(State::Carry, Reason::CarryStart);
+          return carryDrive(r);
         }
         return targetDrive(r);
       }
@@ -356,17 +424,67 @@ struct Machine {
 
 private:
   // Normal (non-edge) behaviour: a center target wins, otherwise scan.
-  Drive behave(const Range (&r)[3]) {
-    if (r[1].mm) return targetDrive(r);
+  Drive behave(const Range (&r)[3], Reason why = Reason::None) {
+    if (r[1].mm) return targetDrive(r, why);
     return searchDrive(r);
   }
 
+  // Opening run: straight, pivot, straight — open loop on purpose, because the
+  // start box is fixed and last year's field test showed this lands next to the
+  // bottle. A centre reading inside openingAbortMm ends the script early so the
+  // robot cannot drive past it.
+  Drive openingDrive(const Range (&r)[3]) {
+    if (r[1].mm && r[1].mm <= tuning.openingAbortMm) return behave(r, Reason::OpeningAbort);
+    const uint32_t t = now_ - stateStart;
+    const uint32_t leg1 = tuning.openingForwardMs;
+    const uint32_t pivotEnd = leg1 + tuning.openingTurnMs;
+    const uint32_t leg2End = pivotEnd + tuning.openingForward2Ms;
+    if (t < leg1 || (t >= pivotEnd && t < leg2End)) {
+      const int16_t pwm = tuning.apply(int16_t(tuning.openingPwm));
+      return Drive{pwm, pwm};
+    }
+    if (t < pivotEnd) {
+      const int16_t pwm = tuning.apply(int16_t(tuning.turnPwm));
+      return Drive{int16_t(tuning.openingTurnDir * pwm), int16_t(-tuning.openingTurnDir * pwm)};
+    }
+    change(State::Search, Reason::OpeningDone, false);
+    return behave(r);
+  }
+
+  // Carry: both wheels forward with a differential that alternates every
+  // carrySweepMs, so the bottle is dragged along an arc instead of straight.
+  // The side ToF readings pull the arc back toward the bottle when it drifts
+  // off centre, which is what keeps contact through the sweep.
+  Drive carryDrive(const Range (&r)[3]) {
+    if (!r[1].mm) { change(State::Search, Reason::BottleLost, false); return searchDrive(r); }
+    if (now_ - stateStart >= tuning.carryMaxMs) {
+      ++carryCycles;
+      change(State::Push, Reason::CarryDone);
+      return targetDrive(r);
+    }
+    const uint16_t sweepMs = tuning.carrySweepMs ? tuning.carrySweepMs : 1;
+    const bool flip = ((now_ - stateStart) / sweepMs) & 1;
+    int16_t steer = flip ? tuning.carryBias : int16_t(-tuning.carryBias);
+    if (r[0].mm && r[0].mm + 60 < r[1].mm) steer -= 20;
+    if (r[2].mm && r[2].mm + 60 < r[1].mm) steer += 20;
+    const int16_t speed = tuning.apply(int16_t(tuning.carryPwm));
+    const int16_t steerOut = tuning.apply(steer);
+    return Drive{int16_t(speed + steerOut), int16_t(speed - steerOut)};
+  }
+
   // Center target acquired: push when close, approach when far.
-  Drive targetDrive(const Range (&r)[3]) {
+  // The transition is logged only when the state actually changes — before this
+  // guard the history ring buffer filled with one self-transition per 5 ms tick.
+  Drive targetDrive(const Range (&r)[3], Reason why = Reason::None) {
     const bool close = r[1].mm <= 150;
-    if (close && state != State::Push) stateStart = now_;
-    change(close ? State::Push : State::Approach,
-           close ? Reason::TargetClose : Reason::TargetSeen, false);
+    const State next = close ? State::Push : State::Approach;
+    if (next != state) {
+      if (close) {
+        stateStart = now_;
+        if (state != State::Carry) contactStart = now_;
+      }
+      change(next, why == Reason::None ? (close ? Reason::TargetClose : Reason::TargetSeen) : why, false);
+    }
 
     int16_t steer = 0;
     if (r[0].mm && r[0].mm + 60 < r[1].mm) steer = -tuning.pushSteerMax;

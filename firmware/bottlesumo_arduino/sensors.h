@@ -4,6 +4,7 @@
 #include <Arduino.h>
 #include <Preferences.h>
 #include "config.h"
+#include "qre.h"
 #include "state_machine.h"
 #include "vl53l0x.h"
 
@@ -15,91 +16,6 @@ namespace BS {
 inline void readQre(uint16_t out[4]) {
   for (uint8_t i = 0; i < 4; ++i) out[i] = uint16_t(analogRead(PIN_QRE[i]));
 }
-
-// ---------------------------------------------------------------------------
-// Self-calibration
-//
-// Two 3-second captures:
-//   floor — robot fully on the table, sampling the real surface and seam tape
-//   void  — robot supported at normal sensor height with all four windows over
-//           the drop
-// The threshold is the midpoint between the two clusters; polarity is detected
-// automatically (some surfaces read higher off the edge, some lower).
-// ---------------------------------------------------------------------------
-struct QreCalibration {
-  uint16_t floorMin[4] = {}, floorMax[4] = {}, edgeMin[4] = {}, edgeMax[4] = {};
-
-  void reset() {
-    for (uint8_t i = 0; i < 4; ++i) {
-      floorMin[i] = floorMax[i] = edgeMin[i] = edgeMax[i] = 0;
-    }
-  }
-
-  void resetCapture(bool floor) {
-    for (uint8_t i = 0; i < 4; ++i) {
-      (floor ? floorMin : edgeMin)[i] = 4095;
-      (floor ? floorMax : edgeMax)[i] = 0;
-    }
-  }
-
-  void sample(bool floor, const uint16_t qre[4]) {
-    for (uint8_t i = 0; i < 4; ++i) {
-      uint16_t &low  = (floor ? floorMin : edgeMin)[i];
-      uint16_t &high = (floor ? floorMax : edgeMax)[i];
-      low  = min(low, qre[i]);
-      high = max(high, qre[i]);
-    }
-  }
-
-  // Same acceptance rule as the ESP-IDF firmware: every channel needs a
-  // floor/void gap of at least 300 ADC counts.
-  bool valid() const {
-    for (uint8_t i = 0; i < 4; ++i) {
-      if (floorMin[i] > floorMax[i] || edgeMin[i] > edgeMax[i] ||
-          floorMax[i] > 4095 || edgeMax[i] > 4095) return false;
-      const int gap = edgeMin[i] > floorMax[i] ? edgeMin[i] - floorMax[i]
-                                               : floorMin[i] - edgeMax[i];
-      if (gap < 300) return false;
-    }
-    return true;
-  }
-
-  bool edgeIsHigh(uint8_t i) const { return edgeMin[i] > floorMax[i]; }
-
-  uint16_t threshold(uint8_t i) const {
-    const bool high = edgeIsHigh(i);
-    return high ? uint16_t((edgeMin[i] + floorMax[i]) / 2)
-                : uint16_t((floorMin[i] + edgeMax[i]) / 2);
-  }
-
-  // 40-count hysteresis, confirmed by the previous sample.
-  bool edge(uint8_t i, uint16_t adc, bool previous) const {
-    const bool high = edgeIsHigh(i);
-    const int threshold = high ? (edgeMin[i] + floorMax[i]) / 2
-                               : (floorMin[i] + edgeMax[i]) / 2;
-    return high ? adc > threshold + (previous ? -40 : 40)
-                : adc < threshold + (previous ? 40 : -40);
-  }
-
-  // Separation quality: distance between clusters divided by the wider
-  // cluster's spread. Midpoints are used because only min/max are stored.
-  float separationRatio(uint8_t i) const {
-    const uint16_t safeMid = uint16_t((floorMin[i] + floorMax[i]) / 2);
-    const uint16_t edgeMid = uint16_t((edgeMin[i] + edgeMax[i]) / 2);
-    const float separation = float(abs(int(edgeMid) - int(safeMid)));
-    const uint16_t spread = max(floorMax[i] - floorMin[i], edgeMax[i] - edgeMin[i]);
-    return separation / float(max(1, int(spread)));
-  }
-
-  // 3 = good (>=5), 2 = usable (3..5), 1 = risky (1.5..3), 0 = fail (<1.5)
-  uint8_t quality(uint8_t i) const {
-    const float ratio = separationRatio(i);
-    if (ratio >= 5.0f) return 3;
-    if (ratio >= 3.0f) return 2;
-    if (ratio >= 1.5f) return 1;
-    return 0;
-  }
-};
 
 struct CalibrationRecord { uint32_t magic; QreCalibration values; };
 
