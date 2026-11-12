@@ -126,8 +126,8 @@ trackside.
 | Group | Fields |
 | --- | --- |
 | Opening | `openingEnabled`, `openingPwm`, `openingForwardMs`, `openingTurnMs`, `openingTurnDir`, `openingForward2Ms`, `openingAbortMm` |
-| Carry | `carryEnabled`, `carryAfterMs`, `carryPwm`, `carryBias`, `carrySweepMs`, `carryMaxMs` |
-| Edge | `edgeDebounceMs`, `maxEscapesPerRound` |
+| Carry | `carryEnabled`, `carryAfterMs`, `carryPwm`, `carryBias`, `carrySweepMs`, `carryMaxMs`, `carryFarMm` |
+| Edge | `edgeDebounceMs`, `escapeMaxMs`, `maxEscapesPerRound` |
 
 Changes are accepted only while stopped, apply immediately, and persist in NVS.
 
@@ -157,27 +157,41 @@ codes the desktop telemetry tool already understands.
 
 ### Opening run
 
-The start box is fixed by the rules, so a short open-loop script beats
-searching. After the 1 s start delay the robot drives straight for
-`openingForwardMs`, pivots `openingTurnMs` in `openingTurnDir`, then drives
-straight for `openingForward2Ms`. On last year's table that sequence already
-arrived next to the bottle.
+The starting position and orientation are **announced at inspection**, not fixed
+by the rules (`docs/competition/table-sumo-rules-2026.md` §5). So the opening is
+an open-loop script you time for one event, not a constant: after the 1 s start
+delay the robot drives straight for `openingForwardMs`, pivots `openingTurnMs`
+in `openingTurnDir`, then drives straight for `openingForward2Ms`. Set those
+four numbers on the practice table before the first round; they are what makes
+the script valid, not the source code.
 
-Two guards keep the open loop honest. A centre ToF reading inside
+Three guards keep the open loop honest. A centre ToF reading inside
 `openingAbortMm` (300 mm) ends the script early and hands over to normal
-approach, so it cannot drive past the bottle. A confirmed edge during the
-opening goes to `Escape` like any other state; the opening is not resumed
-afterwards.
+approach, so it cannot drive past the bottle — but only while driving straight;
+aborting mid-pivot leaves the robot at a partial heading with almost no steering
+authority. A confirmed edge during the opening goes to `Escape` like any other
+state, and the opening is not resumed afterwards.
+
+The pivot runs at `openingPwm`, so `openingTurnMs` means one thing: the time to
+swing the documented angle at the duty you will actually use.
 
 ### Carry
 
 Contact alone puts the bottle in front of the robot; the opponent can still
 line up a clean approach from the side. After `carryAfterMs` of contact, `Carry`
-runs both wheels forward at `carryPwm` with a differential that flips every
-`carrySweepMs`, so the robot arcs and drags the bottle sideways. The left and
-right ToF readings pull the arc back toward the bottle when it drifts off
-centre, which is what keeps contact through the sweep. It leaves after
-`carryMaxMs` and returns to `Push`, so it cannot circle forever.
+runs both wheels forward at `carryPwm` with a differential of `carryBias` that
+flips every `carrySweepMs`, so the robot arcs and drags the bottle sideways. The
+left and right ToF readings pull the arc back toward the bottle when it drifts
+off centre; the correction is `|carryBias| + 20`, so it can always reverse the
+sweep instead of arcing away for half of every cycle.
+
+Keep `carryBias` well under half of `carryPwm`. At 28 on 120 the inside wheel
+still turns at roughly 77 % of the outer one, which drags; at 45 it is 2.2:1 and
+the robot pivots on the spot instead.
+
+It leaves after `carryMaxMs`, or after three samples beyond `carryFarMm`
+(260 mm — the bottle is not being held any more), and returns to the normal
+approach.
 
 The 6 s push budget is measured from the first contact of an engagement, and
 survives the `Push` → `Carry` → `Push` cycle.
@@ -195,6 +209,21 @@ Four layers, in the order they act:
    enters `Fault` instead of reversing again. A broken threshold then shows up
    as a blinking LED and a fault on the page rather than a robot that reverses
    for the rest of the round.
+
+Escape itself is bounded by `escapeMaxMs` (700 ms). Reaching the cap enters
+`Hold` with both motors at zero — never `Stopped`, because ending the round is
+what a recoverable edge looks like from the outside as a loss. Front and rear
+sensors together are treated as an ordinary edge for the same reason: during the
+opening pivot that pattern is a normal corner straddle.
+
+### Losing the bottle
+
+Acquisition needs two ToF samples (~136 ms) but a single miss is only ~66 ms, so
+a strict filter believes "lost" far more easily than "found". The state machine
+holds the last confirmed centre reading for `CENTRE_HOLD_MS` (200 ms) before it
+declares the bottle gone. A bottle pressed against the platen reads below the
+sensor's 35 mm floor and is clamped up to 35 mm, which counts as contact rather
+than as no target.
 
 `tests/arduino-state-machine-test.cpp` holds 120 assertions covering the
 transitions, the priority order, the opening script and its early abort, the

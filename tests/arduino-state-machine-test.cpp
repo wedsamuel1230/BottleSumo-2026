@@ -59,13 +59,18 @@ int main() {
   // ---- Approach -> Push -> Hold ----
   fresh(r, 2100, 0, 100, 0); at(m, 2100); d = m.tick(r, false);
   assert(d.left > 0 && d.right > 0 && m.state == State::Push);
-  fresh(r, 2200); at(m, 2200); stopped(m.tick(r, false));
+
+  // One missed slot is held for CENTRE_HOLD_MS, not read as a lost bottle.
+  fresh(r, 2200); at(m, 2200); d = m.tick(r, false);
+  assert(m.state == State::Push && d.left > 0);
+
+  fresh(r, 2400); at(m, 2400); stopped(m.tick(r, false));
   assert(m.state == State::Hold);
-  fresh(r, 5699, 0, 100, 0); at(m, 5699); stopped(m.tick(r, false));
+  fresh(r, 5899, 0, 100, 0); at(m, 5899); stopped(m.tick(r, false));
   assert(m.state == State::Hold);
-  fresh(r, 5700, 0, 100, 0); at(m, 5700); d = m.tick(r, false);
+  fresh(r, 5900, 0, 100, 0); at(m, 5900); d = m.tick(r, false);
   assert(d.left > 0 && d.right > 0);
-  at(m, 6000); stopped(m.tick(r, false));   // the ranges are now stale
+  at(m, 6300); stopped(m.tick(r, false));   // the ranges are now stale
   assert(m.state == State::Stopped);
 
   // ---- Opening run: straight, pivot, straight, then hand over ----
@@ -140,8 +145,12 @@ int main() {
     assert(e.state == State::Carry);
     assert(d.left != firstLeft);
 
-    // Losing the bottle drops back to the search pattern.
+    // A short dropout is held; a real loss drops back to the search pattern.
     fresh(r, flip + 10, 0, 0, 0); at(e, flip + 10);
+    e.tick(r, false);
+    assert(e.state == State::Carry);
+    fresh(r, flip + CENTRE_HOLD_MS + 10, 0, 0, 0);
+    at(e, flip + CENTRE_HOLD_MS + 10);
     d = e.tick(r, false);
     assert(e.state == State::Search);
     assert(strcmp(reasonName(e.history.newest(0)->reason), "bottle lost") == 0);
@@ -172,9 +181,10 @@ int main() {
     fresh(r, 1000, 0, 100, 0);
     at(e, 1000); e.tick(r, false);          // leaves the start delay into Push
     at(e, 1005, mask); d = e.tick(r, false);
-    const bool front = mask & 3, rear = mask & 12;
-    if (front && rear) { stopped(d); assert(e.state == State::Stopped); }
-    else if (front) { assert(d.left < 0 && d.right < 0); assert(e.state == State::Escape); }
+    const bool front = mask & 3;
+    // Front and rear together is a corner straddle during the opening pivot,
+    // not a reason to end the round: it escapes with a bounded budget.
+    if (front) { assert(d.left < 0 && d.right < 0); assert(e.state == State::Escape); }
     else { assert(d.left > 0 && d.right > 0); assert(e.state == State::Escape); }
   }
 
@@ -190,8 +200,7 @@ int main() {
     assert(e.state == State::Hold);
     fresh(r, 1100); at(e, 1100, 8); d = e.tick(r, false);   // rear reflex preempts hold
     assert(d.left > 0 && d.right > 0);
-    fresh(r, 1410); at(e, 1410, 8); stopped(e.tick(r, false));
-    assert(e.state == State::Stopped);
+    assert(e.state == State::Escape);
   }
 
   // ---- Escape budget turns a broken threshold into a visible fault ----
@@ -316,14 +325,47 @@ int main() {
     fresh(r, 7400); at(e, 7400); e.tick(r, false); assert(e.state == State::Search);
   }
 
-  // ---- Escape timeout ----
+  // ---- A stuck edge holds instead of ending the round ----
   {
     Machine e = plain();
     beginRound(e, 0);
     fresh(r, 1000); at(e, 1000, 1); e.tick(r, false);
-    fresh(r, 1299); at(e, 1299, 1); d = e.tick(r, false); assert(d.left < 0);
-    fresh(r, 1300); at(e, 1300, 1); stopped(e.tick(r, false));
-    assert(e.state == State::Stopped);
+    const uint32_t cap = 1000 + e.tuning.escapeMaxMs;
+    fresh(r, cap - 1); at(e, cap - 1, 1); d = e.tick(r, false);
+    assert(d.left < 0 && e.state == State::Escape);
+    fresh(r, cap); at(e, cap, 1); stopped(e.tick(r, false));
+    assert(e.state == State::Hold);
+    assert(e.state != State::Stopped);
+  }
+
+  // ---- A ghost target does not hold Approach for the whole round ----
+  {
+    Machine e = plain();
+    beginRound(e, 0);
+    fresh(r, 1000, 0, 500, 0); at(e, 1000); e.tick(r, false);
+    assert(e.state == State::Approach);
+    const uint32_t cap = 1000 + APPROACH_MAX_MS;
+    fresh(r, cap - 1, 0, 500, 0); at(e, cap - 1); e.tick(r, false);
+    assert(e.state == State::Approach);
+    fresh(r, cap, 0, 500, 0); at(e, cap); e.tick(r, false);
+    assert(e.state == State::Search);
+  }
+
+  // ---- Carry hands back when the bottle is no longer held ----
+  {
+    Machine e;
+    e.tuning.openingEnabled = false;
+    beginRound(e, 0);
+    fresh(r, 1000, 0, 100, 0); at(e, 1000); e.tick(r, false);
+    const uint32_t enter = 1000 + e.tuning.carryAfterMs;
+    fresh(r, enter, 0, 120, 0); at(e, enter); e.tick(r, false);
+    assert(e.state == State::Carry);
+    // Three samples beyond carryFarMm hand back to the normal approach.
+    for (uint32_t t2 = enter + 10; t2 <= enter + 30; t2 += 10) {
+      fresh(r, t2, 0, uint16_t(e.tuning.carryFarMm + 40), 0);
+      at(e, t2); e.tick(r, false);
+    }
+    assert(e.state == State::Approach);   // 300 mm away, so it closes the gap
   }
 
   // ---- millis() rollover ----
@@ -398,9 +440,10 @@ int main() {
   assert(stateDisplay(State::Carry) == DISPLAY_CARRY);
   assert(stateDisplay(State::Updating) == DISPLAY_UPDATING);
   assert(stateDisplay(State::Fault) == 25);
-  assert(searchDisplayPhase(1000, 0) == DISPLAY_SEARCH_TURN);
-  assert(searchDisplayPhase(1000 + 320, 0) == DISPLAY_SEARCH_OBSERVE);
-  assert(searchDisplayPhase(1000 + 500, 0) == DISPLAY_SEARCH_ADVANCE);
+  assert(searchDisplayPhase(0, 0) == DISPLAY_SEARCH_TURN);
+  assert(searchDisplayPhase(320, 0) == DISPLAY_SEARCH_OBSERVE);
+  assert(searchDisplayPhase(500, 0) == DISPLAY_SEARCH_ADVANCE);
+  assert(searchDisplayPhase(800, 0) == DISPLAY_SEARCH_OBSERVE);
 
   puts("arduino state machine assertions passed");
 }

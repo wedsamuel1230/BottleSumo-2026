@@ -152,6 +152,7 @@ struct Tuning {
   uint16_t searchTurn    = 80;   // pivot while scanning, and side-target turn
   uint16_t searchAdvance = 100;  // straight segment of the search pattern
   uint16_t escapePwm     = 105;  // reverse away from an edge
+  uint16_t escapeMaxMs   = 700;  // give up reversing and hold, never end the round
   uint16_t turnPwm       = 85;   // pivot after an escape
   uint16_t unstickPwm    = 100;  // reverse out of a long push
   int16_t  pushSteerMax  = 25;   // max differential correction while pushing
@@ -178,6 +179,7 @@ struct Tuning {
   int16_t  carryBias     = 45;    // differential that makes the arc
   uint16_t carrySweepMs  = 900;   // swap the arc side this often
   uint16_t carryMaxMs    = 4000;  // leave Carry and go back to Push
+  uint16_t carryFarMm    = 260;   // bottle this far away is no longer held
 
   // ---- Edge robustness ---------------------------------------------------
   uint8_t  edgeDebounceMs     = 25;  // a raw edge must persist this long
@@ -246,7 +248,10 @@ struct Machine {
                                 // threshold is wrong, not that the table moved
   uint32_t contactStart = 0;    // first contact of this engagement, survives
                                 // a Push <-> Carry cycle
-  uint8_t carryCycles = 0;
+  uint32_t searchStart = 0;     // when Search was entered, not when the round began
+  uint16_t lastCentre = 0;      // last confirmed centre reading
+  uint32_t lastCentreMs = 0;
+  uint8_t farCount = 0;         // consecutive carry samples beyond carryFarMm
 
   Tuning tuning;
   History history;
@@ -267,14 +272,17 @@ struct Machine {
     history.push(now_, state, next, why, edges_, qre_);
     state = next;
     if (resetStart) stateStart = now_;
+    if (next == State::Search) { searchStart = now_; farCount = 0; }
   }
 
   void startRound() {
     if (state != State::Stopped) return;
     roundStart = now_;
     escapeCount = 0;
-    carryCycles = 0;
+    farCount = 0;
+    lastCentre = 0;
     contactStart = now_;
+    searchStart = now_;
     change(State::Starting, Reason::ButtonStart);
   }
 
@@ -294,8 +302,12 @@ struct Machine {
   }
 
   // One control step. `emergency` is the stop button, a fault or an update.
-  Drive tick(const Range (&r)[3], bool emergency) {
+  Drive tick(const Range (&rIn)[3], bool emergency) {
     if (state == State::Stopped || state == State::Fault || state == State::Updating) return {};
+
+    // Work on a copy: the centre reading is briefly held so one missed ToF
+    // slot is not read as "the bottle is gone".
+    Range r[3] = {rIn[0], rIn[1], rIn[2]};
 
     // ---- Global overrides -------------------------------------------------
     if (emergency || now_ - roundStart >= ROUND_MS) { stopRound(Reason::Emergency); return {}; }
@@ -311,9 +323,25 @@ struct Machine {
       }
     }
 
+    // Hold the last confirmed centre reading for CENTRE_HOLD_MS. Acquisition
+    // needs two samples (~136 ms) but loss is declared on one (~66 ms), which
+    // biases the machine toward believing the bottle vanished mid-push.
+    if (r[1].mm) {
+      lastCentre = r[1].mm;
+      lastCentreMs = r[1].sampledMs ? r[1].sampledMs : now_;
+    } else if (lastCentre && now_ - lastCentreMs <= CENTRE_HOLD_MS) {
+      r[1].mm = lastCentre;
+      r[1].sampledMs = lastCentreMs;
+    } else {
+      lastCentre = 0;
+    }
+
     const bool front = (edges_ & 0x03) != 0;
     const bool rear  = (edges_ & 0x0C) != 0;
-    if (front && rear) { stopRound(Reason::Emergency); return {}; }
+    // Front and rear together used to end the round. During the opening pivot
+    // that is a normal corner straddle, so it is treated as an edge and the
+    // escape now has a bounded budget instead.
+    (void)rear;
 
     // ---- Edge handling (overrides every state except Escape) --------------
     if (edges_) {
@@ -356,7 +384,13 @@ struct Machine {
         return carryDrive(r);
 
       case State::Escape: {
-        if (now_ - stateStart >= 300) { stopRound(Reason::EscapeTimeout); return {}; }
+        if (now_ - stateStart >= tuning.escapeMaxMs) {
+          // Reversing cannot clear the edge. Stop moving but keep the round
+          // alive: ending the round here is what a real recovery looks like
+          // from the outside as a loss.
+          change(State::Hold, Reason::EscapeTimeout);
+          return {};
+        }
         if (!edges_) {
           if (!clearing) { clearStart = now_; clearing = true; }
           if (now_ - clearStart >= 40) {
@@ -406,6 +440,12 @@ struct Machine {
 
       case State::Approach:
         if (!r[1].mm) { change(State::Search, Reason::NoTarget, false); return searchDrive(r); }
+        if (now_ - stateStart >= APPROACH_MAX_MS) {
+          // A wall or the opponent at 300..900 mm otherwise holds Approach for
+          // the rest of the round.
+          change(State::Search, Reason::NoTarget, false);
+          return searchDrive(r);
+        }
         return targetDrive(r);
 
       case State::Search:
@@ -434,17 +474,24 @@ private:
   // bottle. A centre reading inside openingAbortMm ends the script early so the
   // robot cannot drive past it.
   Drive openingDrive(const Range (&r)[3]) {
-    if (r[1].mm && r[1].mm <= tuning.openingAbortMm) return behave(r, Reason::OpeningAbort);
     const uint32_t t = now_ - stateStart;
     const uint32_t leg1 = tuning.openingForwardMs;
     const uint32_t pivotEnd = leg1 + tuning.openingTurnMs;
     const uint32_t leg2End = pivotEnd + tuning.openingForward2Ms;
-    if (t < leg1 || (t >= pivotEnd && t < leg2End)) {
+    // Abort only while driving straight. Aborting mid-pivot leaves the robot
+    // at a partial heading with almost no steering authority to recover.
+    const bool pivot = t >= leg1 && t < pivotEnd;
+    if (!pivot && r[1].mm && r[1].mm <= tuning.openingAbortMm) {
+      return behave(r, Reason::OpeningAbort);
+    }
+    if (!pivot && t < leg2End) {
       const int16_t pwm = tuning.apply(int16_t(tuning.openingPwm));
       return Drive{pwm, pwm};
     }
-    if (t < pivotEnd) {
-      const int16_t pwm = tuning.apply(int16_t(tuning.turnPwm));
+    if (pivot) {
+      // Pivot at the opening duty, so openingTurnMs means one thing: the time
+      // to swing the documented angle at openingPwm.
+      const int16_t pwm = tuning.apply(int16_t(tuning.openingPwm));
       return Drive{int16_t(tuning.openingTurnDir * pwm), int16_t(-tuning.openingTurnDir * pwm)};
     }
     change(State::Search, Reason::OpeningDone, false);
@@ -457,16 +504,26 @@ private:
   // off centre, which is what keeps contact through the sweep.
   Drive carryDrive(const Range (&r)[3]) {
     if (!r[1].mm) { change(State::Search, Reason::BottleLost, false); return searchDrive(r); }
+    // A bottle that has drifted far ahead is not being carried; hand back to
+    // the normal approach instead of arcing at empty table for four seconds.
+    farCount = r[1].mm > tuning.carryFarMm ? uint8_t(farCount + 1) : 0;
+    if (farCount >= 3) {
+      farCount = 0;
+      change(State::Push, Reason::CarryDone);
+      return targetDrive(r);
+    }
     if (now_ - stateStart >= tuning.carryMaxMs) {
-      ++carryCycles;
       change(State::Push, Reason::CarryDone);
       return targetDrive(r);
     }
     const uint16_t sweepMs = tuning.carrySweepMs ? tuning.carrySweepMs : 1;
     const bool flip = ((now_ - stateStart) / sweepMs) & 1;
     int16_t steer = flip ? tuning.carryBias : int16_t(-tuning.carryBias);
-    if (r[0].mm && r[0].mm + 60 < r[1].mm) steer -= 20;
-    if (r[2].mm && r[2].mm + 60 < r[1].mm) steer += 20;
+    // The correction must be able to reverse the sweep, otherwise the robot
+    // keeps arcing away from the bottle for half of every cycle.
+    const int16_t correction = int16_t((tuning.carryBias < 0 ? -tuning.carryBias : tuning.carryBias) + 20);
+    if (r[0].mm && r[0].mm + 60 < r[1].mm) steer -= correction;
+    if (r[2].mm && r[2].mm + 60 < r[1].mm) steer += correction;
     const int16_t speed = tuning.apply(int16_t(tuning.carryPwm));
     const int16_t steerOut = tuning.apply(steer);
     return Drive{int16_t(speed + steerOut), int16_t(speed - steerOut)};
@@ -479,10 +536,8 @@ private:
     const bool close = r[1].mm <= 150;
     const State next = close ? State::Push : State::Approach;
     if (next != state) {
-      if (close) {
-        stateStart = now_;
-        if (state != State::Carry) contactStart = now_;
-      }
+      stateStart = now_;
+      if (close && state != State::Carry) contactStart = now_;
       change(next, why == Reason::None ? (close ? Reason::TargetClose : Reason::TargetSeen) : why, false);
     }
 
@@ -502,7 +557,7 @@ private:
       const int16_t pwm = tuning.apply(tuning.searchTurn);
       return left ? Drive{int16_t(-pwm), pwm} : Drive{pwm, int16_t(-pwm)};
     }
-    const uint32_t elapsed = now_ - roundStart - START_DELAY_MS;
+    const uint32_t elapsed = now_ - searchStart;
     const int16_t direction = (elapsed / 1000) % 2 ? -1 : 1;
     const uint32_t phase = elapsed % 1000;
     if (phase < 320) {
@@ -516,8 +571,8 @@ private:
 };
 
 // Display state for telemetry / web UI. Kept compatible with the desktop tool.
-inline uint8_t searchDisplayPhase(uint32_t now, uint32_t roundStart) {
-  const uint32_t phase = (now - roundStart - START_DELAY_MS) % 1000;
+inline uint8_t searchDisplayPhase(uint32_t now, uint32_t searchStart) {
+  const uint32_t phase = (now - searchStart) % 1000;
   if (phase < 320) return DISPLAY_SEARCH_TURN;
   if (phase < 500 || phase >= 800) return DISPLAY_SEARCH_OBSERVE;
   return DISPLAY_SEARCH_ADVANCE;

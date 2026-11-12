@@ -122,7 +122,12 @@ struct TofState {
     uint16_t mm = 0;
     uint8_t status = 0;
     if (!sensor[index].readResult(mm, status)) return false;
-    const bool target = status == 11 && mm >= 35 && mm <= 900;
+    // A bottle pressed against the platen reads below the sensor's 35 mm
+    // floor. That is contact, not "no target": clamp it to the floor instead
+    // of discarding the sample, otherwise the state machine sees a lost
+    // bottle the moment it actually touches one.
+    const bool target = status == 11 && mm <= 900;
+    if (target && mm < 35) mm = 35;
     hits[index] = target ? uint8_t(min(2, int(hits[index]) + 1)) : 0;
     // Two consecutive valid samples confirm a target; one sample is not enough.
     ranges[index] = Range{uint16_t(hits[index] == 2 ? mm : 0), now};

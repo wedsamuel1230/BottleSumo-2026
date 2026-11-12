@@ -330,7 +330,7 @@ void controlTask(void *arg) {
     else if (machine.state == State::Search) {
       display = (tof.ranges[0].mm || tof.ranges[2].mm)
                 ? DISPLAY_TARGET_SEEN
-                : searchDisplayPhase(now, machine.roundStart);
+                : searchDisplayPhase(now, machine.searchStart);
     }
     if (display != lastDisplay) { lastDisplay = display; stateChangedMs = now; }
 
@@ -405,6 +405,7 @@ void tofTask(void *arg) {
   (void)arg;
   TickType_t wake = xTaskGetTickCount();
   TaskHealth health;
+  uint8_t tofFailures = 0;
   if (!tof.begin()) {
     faulted = true;
     Serial.println("ToF init failed (XSHUT wiring / I2C)");
@@ -421,10 +422,17 @@ void tofTask(void *arg) {
       continue;
     }
     const uint32_t now = millis();
+    // One 80 ms I2C hiccup under motor EMI used to fault the whole robot and
+    // need a manual clear. Retry before believing it.
     if (!tof.service(now)) {
-      faulted = true;
-      tofHealthy = false;
-      vTaskDelay(pdMS_TO_TICKS(200));
+      if (++tofFailures >= 3) {
+        faulted = true;
+        tofHealthy = false;
+        tofFailures = 0;
+        vTaskDelay(pdMS_TO_TICKS(200));
+      }
+    } else {
+      tofFailures = 0;
     }
     health.sample(1, now);
     vTaskDelayUntil(&wake, pdMS_TO_TICKS(1));

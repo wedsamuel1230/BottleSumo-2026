@@ -225,7 +225,9 @@ function drawQre(d){
 }
 function drawCal(d){
  const names=['良好','可用','偏高','不良'];let h='';
- for(let i=0;i<4;i++){const q=d.quality[i];const cls=q>=3?'ok':(q===2?'':'warn');
+ for(let i=0;i<4;i++){
+  if(d.manual&&d.manual[i]){h+='<div class="row"><span class="k">'+QN[i]+'</span><span class="v">手動 '+d.manualThreshold[i]+' · '+(d.manualHigh[i]?'高':'低')+'</span></div>';continue;}
+  const q=d.quality[i];const cls=q>=3?'ok':(q===2?'':'warn');
   h+='<div class="row"><span class="k">'+QN[i]+'</span><span class="v '+cls+'">ratio '+d.ratio[i].toFixed(2)+' · '+names[q+1]+'</span></div>';}
  $('calTable').innerHTML=h;
  $('calState').textContent=d.calibrated?(d.floorCaptured?'已校準':'已有落差'):'未校準';
@@ -250,14 +252,16 @@ const TSPEC=[
  ['carryEnabled',0,1,1,'帶樽 0/1'],
  ['carryAfterMs',0,3000,50,'帶樽 接觸多久後開始 ms'],
  ['carryPwm',0,255,1,'帶樽 PWM'],
- ['carryBias',0,120,1,'帶樽 轉向差'],
+ ['carryBias',0,80,1,'帶樽 轉向差'],
+ ['carryFarMm',100,900,10,'帶樽 放手指距 mm'],
  ['carrySweepMs',100,3000,50,'帶樽 左右切換 ms'],
  ['carryMaxMs',500,8000,100,'帶樽 最長 ms'],
  ['edgeDebounceMs',0,100,5,'邊緣去抖 ms'],
+ ['escapeMaxMs',100,2000,50,'逃離最長時間 ms'],
  ['maxEscapesPerRound',0,30,1,'每局最多逃離（0=不限）'],
  ['maxPwm',1,255,1,'PWM 上限']
 ];
-const TDEF={powerScale:100,pushPwm:175,approachNear:115,approachFar:145,searchTurn:80,searchAdvance:100,escapePwm:105,turnPwm:85,unstickPwm:100,pushSteerMax:25,maxPwm:255,openingEnabled:1,openingPwm:140,openingForwardMs:1400,openingTurnMs:380,openingTurnDir:1,openingForward2Ms:1200,openingAbortMm:300,carryEnabled:1,carryAfterMs:700,carryPwm:120,carryBias:45,carrySweepMs:900,carryMaxMs:4000,edgeDebounceMs:25,maxEscapesPerRound:12};
+const TDEF={powerScale:100,pushPwm:175,approachNear:115,approachFar:145,searchTurn:80,searchAdvance:100,escapePwm:105,turnPwm:85,unstickPwm:100,pushSteerMax:25,maxPwm:255,openingEnabled:1,openingPwm:140,openingForwardMs:1400,openingTurnMs:380,openingTurnDir:1,openingForward2Ms:1200,openingAbortMm:300,carryEnabled:1,carryAfterMs:700,carryPwm:120,carryBias:28,carrySweepMs:900,carryMaxMs:4000,carryFarMm:260,edgeDebounceMs:25,maxEscapesPerRound:12,escapeMaxMs:700};
 function drawTuning(d){
  let h='';for(const [k,lo,hi,st,lab] of TSPEC){
   if(!(k in d))continue;
@@ -301,7 +305,7 @@ async function refresh(){
  $('benchState').textContent=s.bench?'已啟用（停止時可驅動）':'未啟用（開機按住 BUTTON2）';
  $('startBtn').disabled=!s.canStart;$('stopBtn').disabled=!s.active;
  const r=await api('/api/raw');if(r)drawQre(r);
- const c=await api('/api/config');if(c){drawCal(c);drawTuning(c.tuning);drawStrategy(c.tuning);tuning=c.tuning;$('powerScale').value=tuning.powerScale;$('psVal').textContent=tuning.powerScale;}
+ const c=await api('/api/config');if(c){drawCal(Object.assign({},c,r||{}));drawTuning(c.tuning);drawStrategy(c.tuning);tuning=c.tuning;$('powerScale').value=tuning.powerScale;$('psVal').textContent=tuning.powerScale;}
  if(r)drawManual(r);
  const hh=await api('/api/history');if(hh)drawHistory(hh);
 }
@@ -398,7 +402,10 @@ static void handleStatus() {
   j += ",\"bootId\":" + String(bootId);
   j += ",\"stateName\":\"" + String(stateNameFromDisplay(t.state)) + "\"";
   j += ",\"active\":" + String(t.state != 0 ? 1 : 0);
-  j += ",\"canStart\":" + String((calibrated && !updating && !faulted && !bench) ? 1 : 0);
+  // The machine must also be in Stopped, or the button looks enabled while
+  // /api/start silently does nothing (a machine Fault leaves the round dead).
+  j += ",\"canStart\":" + String((calibrated && !updating && !faulted && !bench &&
+                                 t.state == 0) ? 1 : 0);
   j += ",\"flagText\":\"" + String(flagText(t.flags)) + "\"";
   j += "}";
   sendJson(j);
@@ -480,6 +487,8 @@ static void handleConfig() {
        ",\"carryAfterMs\":" + String(t.carryAfterMs) +
        ",\"carryPwm\":" + String(t.carryPwm) +
        ",\"carryBias\":" + String(t.carryBias) +
+       ",\"carryFarMm\":" + String(t.carryFarMm) +
+       ",\"escapeMaxMs\":" + String(t.escapeMaxMs) +
        ",\"carrySweepMs\":" + String(t.carrySweepMs) +
        ",\"carryMaxMs\":" + String(t.carryMaxMs) +
        ",\"edgeDebounceMs\":" + String(t.edgeDebounceMs) +
@@ -542,7 +551,8 @@ static bool tuningFromJson(const String &body, Tuning &out) {
                                "openingTurnMs", "openingTurnDir", "openingForward2Ms",
                                "openingAbortMm", "carryEnabled", "carryAfterMs",
                                "carryPwm", "carryBias", "carrySweepMs", "carryMaxMs",
-                               "edgeDebounceMs", "maxEscapesPerRound"};
+                               "edgeDebounceMs", "maxEscapesPerRound",
+                               "carryFarMm", "escapeMaxMs"};
   Tuning t = out;
   for (const char *key : keys) {
     const String needle = String("\"") + key + "\"";
@@ -580,6 +590,8 @@ static bool tuningFromJson(const String &body, Tuning &out) {
     else if (String(key) == "carryMaxMs") t.carryMaxMs = uint16_t(constrain(value, 200, 8000));
     else if (String(key) == "edgeDebounceMs") t.edgeDebounceMs = uint8_t(constrain(value, 0, 100));
     else if (String(key) == "maxEscapesPerRound") t.maxEscapesPerRound = uint8_t(constrain(value, 0, 30));
+    else if (String(key) == "carryFarMm") t.carryFarMm = uint16_t(constrain(value, 100, 900));
+    else if (String(key) == "escapeMaxMs") t.escapeMaxMs = uint16_t(constrain(value, 100, 2000));
   }
   out = t;
   return true;

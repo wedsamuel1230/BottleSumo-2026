@@ -55,6 +55,8 @@ constexpr uint32_t RANGE_STALE_MS = 250;
 constexpr uint32_t SURVIVE_MS = 3500;         // stay on the table after a push
 constexpr uint32_t CALIBRATION_MS = 3000;     // floor / void capture window
 constexpr int      EDGE_HYSTERESIS = 40;      // ADC counts of hysteresis
+constexpr uint32_t CENTRE_HOLD_MS = 200;      // keep the last centre reading this long
+constexpr uint32_t APPROACH_MAX_MS = 8000;    // give up on a phantom target
 constexpr uint32_t OTA_WINDOW_MS = 60000;     // armed by holding BUTTON2
 constexpr uint32_t BOOT_VERIFY_MS = 5000;     // self-test before OTA confirm
 
