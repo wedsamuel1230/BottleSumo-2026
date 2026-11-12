@@ -105,14 +105,14 @@ Pololu 初始化由 library 執行；運行時的單次啟動取自固定的 1.3
 | I2C SDA／SCL | 17／16 |
 | ToF 左／中／右 XSHUT | 6／7／15 |
 | ToF 左／中／右地址 | 0x30／0x31／0x32；每次上電重新分配 |
-| 原 ToF interrupt | 18 保留為輸入；輪詢測距，不需並接三個 interrupt |
-| LED／BUTTON1／BUTTON2 | 40／41／42；按鈕 HIGH 表示按下，保留外部下拉 |
+| 狀態 LED（兩顆一起驅動） | 48、47；HIGH 亮 |
+| BUTTON1／BUTTON2 | 41／42；HIGH 表示按下，保留外部下拉 |
 
 三顆 ToF 共用 SDA/SCL；**拆除 XSHUT 固定接 3V3 的接法**，按確認的
 GPIO6/7/15 分開控制。XSHUT 拉低時關閉，啟用時改為 INPUT，使用模組
 自身 pull-up，避免向非 level-shifted XSHUT 強灌電壓。確認實際模組的
 pull-up 和 3V3 I2C 電平；裸感測器與 breakout 不一定有相同電路。
-GPIO18 可保留原有單頭 interrupt 接線，不用它作三頭識別。
+v2 板沒有 GPIO18 接線；三頭識別只用 XSHUT。
 
 建議中央頭朝正前方，左右頭分別向外約 20–25°，光窗距枱面約 65–75mm，
 先以實際直立／橫躺水樽驗證。這些擺位是工程建議，不是本次量測結果。

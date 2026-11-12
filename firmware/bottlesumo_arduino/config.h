@@ -34,8 +34,7 @@ constexpr uint8_t PIN_FG[2]    = {9, 12};
 constexpr uint8_t PIN_XSHUT[3] = {6, 7, 15}; // left, center, right
 constexpr uint8_t PIN_SDA      = 17;
 constexpr uint8_t PIN_SCL      = 16;
-constexpr uint8_t PIN_TOF_GPIO = 18;         // input only; not used for ranging
-constexpr uint8_t PIN_LED      = 40;
+constexpr uint8_t PIN_LED[2]   = {48, 47};   // status LEDs, active high
 constexpr uint8_t PIN_BTN_START = 41;        // HIGH when pressed (external pull-down)
 constexpr uint8_t PIN_BTN_STOP  = 42;        // HIGH when pressed
 

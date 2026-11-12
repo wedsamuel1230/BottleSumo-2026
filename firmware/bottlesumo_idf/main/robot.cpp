@@ -31,6 +31,7 @@ constexpr gpio_num_t PWM_PINS[2] = {GPIO_NUM_10, GPIO_NUM_13};
 constexpr gpio_num_t DIR_PINS[2] = {GPIO_NUM_11, GPIO_NUM_14};
 constexpr gpio_num_t FG_PINS[2] = {GPIO_NUM_9, GPIO_NUM_12};
 constexpr gpio_num_t XSHUT[3] = {GPIO_NUM_6, GPIO_NUM_7, GPIO_NUM_15};
+constexpr gpio_num_t STATUS_LED_PINS[2] = {GPIO_NUM_48, GPIO_NUM_47};
 constexpr adc_channel_t QRE_CHANNELS[4] = {ADC_CHANNEL_0, ADC_CHANNEL_1, ADC_CHANNEL_3, ADC_CHANNEL_4};
 constexpr uint32_t CAL_MAGIC = 0x42534D33;
 struct CalibrationRecord { uint32_t magic; Calibration values; };
@@ -228,7 +229,8 @@ static void controlTask(void *) {
     if (duration > 5000 || now - lastBegan > 7) telemetry.deadline_misses++;
     lastBegan = now;
     xQueueOverwrite(telemetryQueue, &telemetry);
-    gpio_set_level(GPIO_NUM_40, faulted ? (now / 100) % 2 : controller.state != State::Stopped);
+    for (auto pin : STATUS_LED_PINS)
+      gpio_set_level(pin, faulted ? (now / 100) % 2 : controller.state != State::Stopped);
     esp_task_wdt_reset();
     vTaskDelayUntil(&wake, pdMS_TO_TICKS(5));
   }
@@ -309,7 +311,7 @@ extern "C" void app_main() {
     gpio_set_direction(DIR_PINS[i], GPIO_MODE_OUTPUT); gpio_set_level(DIR_PINS[i], !FORWARD_LEVEL[i]);
   }
   gpio_set_direction(GPIO_NUM_41, GPIO_MODE_INPUT); gpio_set_direction(GPIO_NUM_42, GPIO_MODE_INPUT);
-  gpio_set_direction(GPIO_NUM_40, GPIO_MODE_OUTPUT); gpio_set_direction(GPIO_NUM_18, GPIO_MODE_INPUT);
+  for (auto pin : STATUS_LED_PINS) { gpio_set_direction(pin, GPIO_MODE_OUTPUT); gpio_set_level(pin, 0); }
   bench = gpio_get_level(GPIO_NUM_42); // Physical boot selection; networking cannot change mode.
   check(nvs_flash_init()); // Never erase calibration automatically on init errors.
   if (esp_psram_get_size() != 8 * 1024 * 1024) faulted = true;

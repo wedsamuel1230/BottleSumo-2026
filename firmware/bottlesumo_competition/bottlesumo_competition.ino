@@ -16,8 +16,8 @@ constexpr uint8_t FG_PINS[] = {9, 12};
 constexpr uint8_t XSHUT_PINS[] = {6, 7, 15}; // Left, center, right.
 constexpr uint8_t TOF_ADDRESSES[] = {0x30, 0x31, 0x32};
 constexpr uint8_t I2C_SDA_PIN = 17, I2C_SCL_PIN = 16;
-constexpr uint8_t VL53L0X_GPIO_PIN = 18; // Input only, as in the test sketch.
-constexpr uint8_t STATUS_LED_PIN = 40, BUTTON1_PIN = 41, BUTTON2_PIN = 42;
+constexpr uint8_t STATUS_LED_PINS[] = {48, 47}; // Active high.
+constexpr uint8_t BUTTON1_PIN = 41, BUTTON2_PIN = 42;
 
 // Set true only after the commissioning checks in the guide, then rebuild.
 constexpr bool HARDWARE_CONFIRMED = false;
@@ -246,8 +246,7 @@ void setup() {
     attachInterrupt(digitalPinToInterrupt(FG_PINS[1]), rightFgISR, RISING);
   }
   pinMode(BUTTON1_PIN, INPUT); pinMode(BUTTON2_PIN, INPUT); // External pull-downs.
-  pinMode(STATUS_LED_PIN, OUTPUT); digitalWrite(STATUS_LED_PIN, LOW);
-  pinMode(VL53L0X_GPIO_PIN, INPUT);
+  for (auto pin : STATUS_LED_PINS) { pinMode(pin, OUTPUT); digitalWrite(pin, LOW); }
   analogReadResolution(12);
   CalibrationRecord record = {};
   if (preferences.begin("bottlesumo", true)) {
@@ -295,8 +294,9 @@ void loop() {
     const Drive drive = controller.tick(now, edges, ranges, hardwareFault);
     if (!setWheel(0, drive.left, now) || !setWheel(1, drive.right, now)) fault("PWM write");
     const bool active = controller.state != State::Stopped;
-    digitalWrite(STATUS_LED_PIN, hardwareFault ? (now / 100) % 2
-                                             : (active ? HIGH : (calibrated ? (now / 500) % 2 : LOW)));
+    const bool ledOn = hardwareFault ? (now / 100) % 2
+                                     : (active ? HIGH : (calibrated ? (now / 500) % 2 : LOW));
+    for (auto pin : STATUS_LED_PINS) digitalWrite(pin, ledOn);
   }
   // Edge and stop handling runs before every bounded I2C service step.
   serviceTof(millis());

@@ -389,8 +389,9 @@ void controlTask(void *arg) {
     unlockConfig();
 
     // ---- Status LED ----
-    digitalWrite(PIN_LED, showFault ? ((now / 100) % 2)
-                                    : (machine.state != State::Stopped ? HIGH : LOW));
+    const bool ledOn = showFault ? ((now / 100) % 2)
+                                 : (machine.state != State::Stopped);
+    for (uint8_t pin : PIN_LED) digitalWrite(pin, ledOn);
 
     health.sample(0, now);
     esp_task_wdt_reset();
@@ -537,8 +538,7 @@ void setup() {
   }
   pinMode(PIN_BTN_START, INPUT);
   pinMode(PIN_BTN_STOP, INPUT);
-  pinMode(PIN_LED, OUTPUT);
-  pinMode(PIN_TOF_GPIO, INPUT);
+  for (uint8_t pin : PIN_LED) { pinMode(pin, OUTPUT); digitalWrite(pin, LOW); }
   for (uint8_t i = 0; i < 4; ++i) pinMode(PIN_QRE[i], INPUT);
   for (uint8_t i = 0; i < 2; ++i) pinMode(PIN_FG[i], INPUT);
 
