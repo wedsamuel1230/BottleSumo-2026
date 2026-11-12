@@ -54,6 +54,7 @@ constexpr uint32_t ROUND_MS = 120000;
 constexpr uint32_t RANGE_STALE_MS = 250;
 constexpr uint32_t SURVIVE_MS = 3500;         // stay on the table after a push
 constexpr uint32_t CALIBRATION_MS = 3000;     // floor / void capture window
+constexpr int      EDGE_HYSTERESIS = 40;      // ADC counts of hysteresis
 constexpr uint32_t OTA_WINDOW_MS = 60000;     // armed by holding BUTTON2
 constexpr uint32_t BOOT_VERIFY_MS = 5000;     // self-test before OTA confirm
 
@@ -66,9 +67,28 @@ constexpr bool FORWARD_LEVEL[2] = {true, true};
 // FG pulses are diagnostic only until their voltage and pull-up are confirmed.
 constexpr bool FG_CONNECTED = false;
 
+// ---- FreeRTOS task layout (dual core) --------------------------------------
+// Core 1 runs the two hard real-time tasks and nothing else, so a Wi-Fi burst
+// or an HTTP response can never delay a control tick or a ranging slot.
+// Core 0 runs Wi-Fi/lwIP plus the soft tasks. Priorities are fixed per core:
+// they are only comparable within a core, which is why the split matters more
+// than the absolute numbers.
+constexpr int CORE_REALTIME = 1;
+constexpr int CORE_NETWORK  = 0;
+constexpr unsigned PRIO_CONTROL = 20;   // core 1, highest
+constexpr unsigned PRIO_TOF     = 10;   // core 1, below control
+constexpr unsigned PRIO_WEB     = 3;    // core 0
+constexpr unsigned PRIO_SERVICE = 2;    // core 0
+constexpr uint32_t STACK_CONTROL = 8192;
+constexpr uint32_t STACK_TOF     = 4096;
+constexpr uint32_t STACK_WEB     = 16384;
+constexpr uint32_t STACK_SERVICE = 4096;
+
 // ---- Persistence keys ------------------------------------------------------
-constexpr uint32_t CAL_MAGIC   = 0x42534D33; // 'BSM3'
-constexpr uint32_t TUNING_MAGIC = 0x42535431; // 'BST1'
+// Bumped when the stored layouts change: an old record is then rejected and
+// the robot demands a fresh calibration instead of using stale geometry.
+constexpr uint32_t CAL_MAGIC   = 0x42534D34; // 'BSM4'  (manual thresholds)
+constexpr uint32_t TUNING_MAGIC = 0x42535432; // 'BST2'  (opening + carry)
 constexpr uint32_t WIFI_MAGIC  = 0x42535749;  // 'BSWI'
 
 // ---- Display state codes (telemetry / web UI) ------------------------------
@@ -83,5 +103,7 @@ constexpr uint8_t DISPLAY_BENCH_DRIVE     = 21;
 constexpr uint8_t DISPLAY_CAL_FLOOR       = 22;
 constexpr uint8_t DISPLAY_CAL_VOID        = 23;
 constexpr uint8_t DISPLAY_UPDATING        = 24;
+constexpr uint8_t DISPLAY_OPENING         = 26;
+constexpr uint8_t DISPLAY_CARRY           = 27;
 
 } // namespace BS

@@ -4,11 +4,14 @@
 // three-head ToF schedule, same competition strategy, plus a configuration
 // web UI, self-calibration and OTA with rollback.
 //
-// Task split (never put motor or sensor work in a web handler):
-//   control  core 1, 5 ms   QRE ADC, state machine, PWM, telemetry
-//   tof      core 0         VL53L0X single-shot schedule, no blocking waits
-//   web      core 0         HTTP UI, UDP telemetry, OTA window
-//   service  core 0         Serial CLI and NVS writes (never blocks control)
+// Task split. Core 1 is reserved for the two hard real-time tasks, so Wi-Fi
+// and HTTP work on core 0 can never delay a control tick or a ranging slot:
+//   control  core 1, prio 20, 5 ms   QRE ADC, state machine, PWM, telemetry
+//   tof      core 1, prio 10, 1 ms   VL53L0X single-shot schedule, no blocking
+//   web      core 0, prio 3          HTTP UI, UDP telemetry, OTA window
+//   service  core 0, prio 2          Serial CLI and NVS writes
+// Only controlTask ever calls setWheel(); every other task talks to it
+// through a queue or through `live` under configMutex.
 #include <Arduino.h>
 #include <Wire.h>
 #include <freertos/FreeRTOS.h>
@@ -40,6 +43,7 @@ namespace {
 
 Machine machine;
 TofState tof;
+EdgeFilter edgeFilter;
 uint16_t qre[4] = {};
 uint8_t edges = 0;
 uint32_t bootId = 0;
@@ -199,6 +203,7 @@ void controlTask(void *arg) {
   uint32_t startChanged = 0;
   bool stopTracking = false, windowArmed = false;
   uint32_t stopHoldStart = 0;
+  TaskHealth health;
 
   while (true) {
     const uint32_t began = millis();
@@ -210,13 +215,16 @@ void controlTask(void *arg) {
     const bool calibrated = live.calibrated;
     const QreCalibration cal = live.calibration;
     unlockConfig();
-    uint8_t nextEdges = 0;
+    uint8_t rawEdges = 0;
     if (calibrated) {
       for (uint8_t i = 0; i < 4; ++i) {
-        if (cal.edge(i, qre[i], (edges >> i) & 1)) nextEdges |= uint8_t(1 << i);
+        if (cal.edge(i, qre[i], (edges >> i) & 1)) rawEdges |= uint8_t(1 << i);
       }
     }
-    edges = nextEdges;
+    // Debounce: a raw edge has to hold for edgeDebounceMs before the state
+    // machine sees it. One noisy sample is not a table edge.
+    edgeFilter.confirmMs = machine.tuning.edgeDebounceMs;
+    edges = edgeFilter.update(now, rawEdges);
 
     // ---- Buttons ----
     const bool stopHeld = digitalRead(PIN_BTN_STOP) == HIGH;
@@ -224,6 +232,12 @@ void controlTask(void *arg) {
     if (startHeld != startRaw) { startRaw = startHeld; startChanged = now; }
     if (now - startChanged >= 30 && startHeld != startStable) {
       startStable = startHeld;
+      if (startHeld && !stopHeld && machine.state == State::Fault) {
+        // A budget/edge fault is cleared by the same press that starts the
+        // round, so a misfire does not need a reboot.
+        machine.clearFault();
+        faulted = false;
+      }
       if (startHeld && !stopHeld && canStartRound()) {
         bool fresh = tofHealthy;
         for (uint8_t i = 0; i < 3; ++i) {
@@ -330,7 +344,8 @@ void controlTask(void *arg) {
     t.state = display;
     t.state_elapsed_ms = now - stateChangedMs;
     t.edges = edges;
-    t.flags = uint8_t((faulted ? Fault : 0) |
+    const bool showFault = faulted || machine.state == State::Fault;
+    t.flags = uint8_t((showFault ? Fault : 0) |
                       (calibrated ? Calibrated : 0) |
                       (HARDWARE_CONFIRMED ? HardwareConfirmed : 0) |
                       (updating ? Updating : 0) |
@@ -367,15 +382,17 @@ void controlTask(void *arg) {
       unlockConfig();
     }
 
-    // ---- Fault flag mirror ----
+    // ---- Fault + escape mirror ----
     lockConfig();
-    live.faulted = faulted;
+    live.faulted = showFault;
+    live.escapeCount = machine.escapeCount;
     unlockConfig();
 
     // ---- Status LED ----
-    digitalWrite(PIN_LED, faulted ? ((now / 100) % 2)
-                                   : (machine.state != State::Stopped ? HIGH : LOW));
+    digitalWrite(PIN_LED, showFault ? ((now / 100) % 2)
+                                    : (machine.state != State::Stopped ? HIGH : LOW));
 
+    health.sample(0, now);
     esp_task_wdt_reset();
     vTaskDelayUntil(&wake, pdMS_TO_TICKS(CONTROL_PERIOD_MS));
   }
@@ -387,6 +404,7 @@ void controlTask(void *arg) {
 void tofTask(void *arg) {
   (void)arg;
   TickType_t wake = xTaskGetTickCount();
+  TaskHealth health;
   if (!tof.begin()) {
     faulted = true;
     Serial.println("ToF init failed (XSHUT wiring / I2C)");
@@ -402,11 +420,13 @@ void tofTask(void *arg) {
       vTaskDelay(pdMS_TO_TICKS(20));
       continue;
     }
-    if (!tof.service(millis())) {
+    const uint32_t now = millis();
+    if (!tof.service(now)) {
       faulted = true;
       tofHealthy = false;
       vTaskDelay(pdMS_TO_TICKS(200));
     }
+    health.sample(1, now);
     vTaskDelayUntil(&wake, pdMS_TO_TICKS(1));
   }
 }
@@ -418,7 +438,9 @@ void serviceTask(void *arg) {
   (void)arg;
   char line[128] = {};
   size_t used = 0;
+  TaskHealth health;
   while (true) {
+    health.sample(3, millis());
     SaveRequest save;
     if (xQueueReceive(saveQueue, &save, pdMS_TO_TICKS(10))) {
       bool ok = false;
@@ -578,10 +600,11 @@ void setup() {
 
   webBegin();
 
-  xTaskCreatePinnedToCore(controlTask, "control", 8192, nullptr, 20, nullptr, 1);
-  xTaskCreatePinnedToCore(tofTask, "tof", 4096, nullptr, 6, nullptr, 0);
-  xTaskCreatePinnedToCore(webTask, "web", 16384, nullptr, 3, nullptr, 0);
-  xTaskCreatePinnedToCore(serviceTask, "service", 4096, nullptr, 2, nullptr, 0);
+  // Core 1: hard real-time pair only. Core 0: Wi-Fi/lwIP plus the soft tasks.
+  xTaskCreatePinnedToCore(controlTask, "control", STACK_CONTROL, nullptr, PRIO_CONTROL, nullptr, CORE_REALTIME);
+  xTaskCreatePinnedToCore(tofTask, "tof", STACK_TOF, nullptr, PRIO_TOF, nullptr, CORE_REALTIME);
+  xTaskCreatePinnedToCore(webTask, "web", STACK_WEB, nullptr, PRIO_WEB, nullptr, CORE_NETWORK);
+  xTaskCreatePinnedToCore(serviceTask, "service", STACK_SERVICE, nullptr, PRIO_SERVICE, nullptr, CORE_NETWORK);
 
   // Runs after the workers start so the ToF and web tasks can produce the
   // evidence the self-test needs.
