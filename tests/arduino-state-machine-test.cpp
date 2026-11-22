@@ -68,31 +68,47 @@ int main() {
   at(m, 6000); stopped(m.tick(r, false));   // the ranges are now stale
   assert(m.state == State::Stopped);
 
-  // ---- Opening run: straight, pivot, straight, then hand over ----
+  // ---- Opening: a fixed per-map plan, then hand over to Search ----
   {
     Machine e;
     assert(e.tuning.openingEnabled);
     beginRound(e, 0);
-    fresh(r, 1000, 0, 0, 0); at(e, 1000);
+    const uint32_t t0 = 1000;
+    fresh(r, t0, 0, 0, 0); at(e, t0);
     d = e.tick(r, false);
     assert(e.state == State::Opening);
-    assert(d.left > 0 && d.right > 0 && d.left == d.right);   // straight
+    assert(e.map == MapType::SeniorA);
+    assert(d.left > 0 && d.right > 0 && d.left == d.right);   // leg 1 straight
 
-    const uint32_t leg1 = e.tuning.openingForwardMs;
-    fresh(r, 1000 + leg1 + 5, 0, 0, 0); at(e, 1000 + leg1 + 5);
+    fresh(r, t0 + 1305, 0, 0, 0); at(e, t0 + 1305);
     d = e.tick(r, false);
     assert(d.left > 0 && d.right < 0);                        // pivot right
 
-    const uint32_t pivotEnd = leg1 + e.tuning.openingTurnMs;
-    fresh(r, 1000 + pivotEnd + 5, 0, 0, 0); at(e, 1000 + pivotEnd + 5);
+    fresh(r, t0 + 1730, 0, 0, 0); at(e, t0 + 1730);
     d = e.tick(r, false);
-    assert(d.left > 0 && d.right > 0 && d.left == d.right);    // leg 2 straight
+    assert(d.left > 0 && d.right > 0 && d.left == d.right);    // leg 3 straight
 
-    const uint32_t scriptEnd = pivotEnd + e.tuning.openingForward2Ms;
-    fresh(r, 1000 + scriptEnd + 5, 0, 0, 0); at(e, 1000 + scriptEnd + 5);
+    fresh(r, t0 + 3430, 0, 0, 0); at(e, t0 + 3430);
+    d = e.tick(r, false);
+    assert(d.left > d.right && d.right > 0);                   // senior A arc
+
+    fresh(r, t0 + 5005, 0, 0, 0); at(e, t0 + 5005);
     d = e.tick(r, false);
     assert(e.state == State::Search);
     assert(strcmp(reasonName(e.history.newest(0)->reason), "opening done") == 0);
+  }
+
+  // ---- Senior B runs its own plan: the joint arc leans the other way ----
+  {
+    Machine e;
+    at(e, 0);
+    e.startRound(MapType::SeniorB);
+    const uint32_t t0 = 1000;
+    fresh(r, t0, 0, 0, 0); at(e, t0); e.tick(r, false);
+    assert(e.state == State::Opening && e.map == MapType::SeniorB);
+    fresh(r, t0 + 3430, 0, 0, 0); at(e, t0 + 3430);
+    d = e.tick(r, false);
+    assert(d.right > d.left && d.left > 0);
   }
 
   // ---- Opening aborts the moment the centre head sees the bottle ----
@@ -129,19 +145,21 @@ int main() {
     fresh(r, enter, 0, 120, 0); at(e, enter);
     d = e.tick(r, false);
     assert(e.state == State::Carry);
-    assert(d.left != d.right);                    // it is arcing, not driving straight
-    assert(d.left > 0 && d.right > 0);            // both wheels keep pushing
+    assert(d.left == d.right && d.left > 0);      // straight front-face push
 
-    // The arc side flips after carrySweepMs.
-    const int firstLeft = d.left;
-    const uint32_t flip = enter + e.tuning.carrySweepMs;
-    fresh(r, flip, 0, 120, 0); at(e, flip);
+    // A side head that sees the bottle closer only nudges the heading; it
+    // never spins, so the front-face contact is kept.
+    fresh(r, enter + 10, 40, 120, 0); at(e, enter + 10);
     d = e.tick(r, false);
     assert(e.state == State::Carry);
-    assert(d.left != firstLeft);
+    assert(d.left < d.right && d.left > 0);
+
+    fresh(r, enter + 20, 0, 120, 40); at(e, enter + 20);
+    d = e.tick(r, false);
+    assert(d.left > d.right);
 
     // Losing the bottle drops back to the search pattern.
-    fresh(r, flip + 10, 0, 0, 0); at(e, flip + 10);
+    fresh(r, enter + 30, 0, 0, 0); at(e, enter + 30);
     d = e.tick(r, false);
     assert(e.state == State::Search);
     assert(strcmp(reasonName(e.history.newest(0)->reason), "bottle lost") == 0);

@@ -42,8 +42,14 @@ constexpr uint8_t QRE_PINS[] = {QRE1_PIN, QRE2_PIN, QRE3_PIN, QRE4_PIN};
 constexpr uint8_t QRE_COUNT = sizeof(QRE_PINS) / sizeof(QRE_PINS[0]);
 
 constexpr uint8_t TOF_I2C_ADDRESS = 0x29;
+constexpr uint8_t XSHUT_PINS[3] = {6, 7, 15};  // left, center, right
 constexpr uint8_t PWM_MAX = 255;
-constexpr uint8_t MOTOR_TEST_DUTY = 255;       // 25% of 8-bit PWM
+constexpr uint8_t MOTOR_TEST_DUTY = 64;        // 25% of full scale
+// The bench reported a wheel running at full speed with PWM held low, so the
+// driver input is treated as active-low and every commanded duty is inverted.
+// Old sketch wrote duty 0 to "stop", which that input reads as full speed.
+// If a wheel now runs at "stop" and stops at 25%, set this to false.
+constexpr bool MOTOR_PWM_ACTIVE_LOW = true;
 constexpr uint32_t LIVE_REPORT_PERIOD_MS = 2000;
 
 VL53L0X tof;
@@ -58,6 +64,7 @@ void motor2EdgeISR();
 
 void printHelp();
 void scanI2C();
+int scanTofSlots();
 void initTof();
 void printTofReading();
 void printQreReadings();
@@ -110,6 +117,14 @@ void setup() {
   Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
   Wire.setClock(400000);
 
+  const int slot = scanTofSlots();
+  if (slot >= 0) {
+    Serial.printf("ToF slot selected: %d (XSHUT GPIO%u)\n", slot + 1, XSHUT_PINS[slot]);
+  } else {
+    Serial.println(F("ToF not found in any XSHUT slot; releasing all three."));
+    for (uint8_t k = 0; k < 3; ++k) pinMode(XSHUT_PINS[k], INPUT);
+    delay(20);
+  }
   scanI2C();
   initTof();
   ledSelfTest();
@@ -145,6 +160,9 @@ void loop() {
         break;
       case 's':
         printMotorSignals(true);
+        break;
+      case 'z':
+        if (scanTofSlots() >= 0) initTof();
         break;
       case 'l':
         ledSelfTest();
@@ -190,9 +208,29 @@ void printHelp() {
   Serial.println(F("  i  scan I2C and read VL53L0X"));
   Serial.println(F("  t  read one VL53L0X distance"));
   Serial.println(F("  s  show motor signal levels and edge counters"));
+  Serial.println(F("  z  rescan the three XSHUT slots for the VL53L0X"));
   Serial.println(F("  l  blink status LEDs on GPIO48/47"));
   Serial.println(F("  m  arm the motor test; y starts it, x cancels/stops"));
   Serial.println();
+}
+
+int scanTofSlots() {
+  Serial.println(F("ToF XSHUT slot scan (SDA=GPIO17, SCL=GPIO16):"));
+  for (uint8_t i = 0; i < 3; ++i) {
+    for (uint8_t k = 0; k < 3; ++k) {
+      pinMode(XSHUT_PINS[k], OUTPUT);
+      digitalWrite(XSHUT_PINS[k], LOW);
+    }
+    delay(5);
+    pinMode(XSHUT_PINS[i], INPUT);
+    delay(20);
+    Wire.beginTransmission(TOF_I2C_ADDRESS);
+    const bool found = Wire.endTransmission() == 0;
+    Serial.printf("  slot %u XSHUT GPIO%u: %s\n", i + 1, XSHUT_PINS[i],
+                  found ? "found 0x29" : "no device");
+    if (found) return int(i);
+  }
+  return -1;
 }
 
 void scanI2C() {
@@ -261,6 +299,10 @@ void printTofReading() {
 void printQreReadings() {
   Serial.println(F("QRE1113 readings (digital HIGH/LOW plus raw ADC 0..4095):"));
   for (uint8_t i = 0; i < QRE_COUNT; ++i) {
+    // analogRead leaves the pad on its analog function, and a digitalRead
+    // after that reads 0 whatever the real level is. Re-select the digital
+    // input before sampling, then take the ADC value.
+    pinMode(QRE_PINS[i], INPUT);
     const int digitalValue = digitalRead(QRE_PINS[i]);
     const int analogValue = analogRead(QRE_PINS[i]);
     Serial.printf("  QRE%u GPIO%u: digital=%d, analog=%d\n", i + 1,
@@ -307,17 +349,19 @@ void ledSelfTest() {
 }
 
 void stopAllMotors() {
-  analogWrite(MOTOR1_PWM_PIN, 0);
-  analogWrite(MOTOR2_PWM_PIN, 0);
+  const uint8_t idle = MOTOR_PWM_ACTIVE_LOW ? PWM_MAX : 0;
+  analogWrite(MOTOR1_PWM_PIN, idle);
+  analogWrite(MOTOR2_PWM_PIN, idle);
   digitalWrite(MOTOR1_DIR_PIN, LOW);
   digitalWrite(MOTOR2_DIR_PIN, LOW);
 }
 
 void setMotor(uint8_t pwmPin, uint8_t dirPin, bool forward, uint8_t duty) {
+  const uint8_t raw = MOTOR_PWM_ACTIVE_LOW ? uint8_t(PWM_MAX - duty) : duty;
   digitalWrite(dirPin, forward ? HIGH : LOW);
-  analogWrite(pwmPin, duty);
-  Serial.printf("  GPIO%u DIR=%d, GPIO%u PWM duty=%u, output level=%d\n",
-                dirPin, forward ? HIGH : LOW, pwmPin, duty,
+  analogWrite(pwmPin, raw);
+  Serial.printf("  GPIO%u DIR=%d, GPIO%u duty=%u raw=%u, pad level=%d\n",
+                dirPin, forward ? HIGH : LOW, pwmPin, duty, raw,
                 digitalRead(pwmPin));
 }
 
@@ -349,7 +393,10 @@ bool runMotorPhase(const __FlashStringHelper* label, uint8_t pwmPin,
 
 void runMotorTest() {
   motorTestPending = false;
-  Serial.println(F("Motor test starting: 25% PWM, 5000 ms per direction."));
+  Serial.printf("Motor test starting: 25%% duty, active-low=%d, 5000 ms per direction.\n",
+                MOTOR_PWM_ACTIVE_LOW ? 1 : 0);
+  Serial.println(F("Check that both wheels are still before the first phase."));
+  Serial.println(F("If a wheel turns now, cut power: the PWM polarity is wrong."));
   Serial.println(F("Send 'x' at any time for an emergency stop."));
 
   if (!runMotorPhase(F("Motor 1 forward"), MOTOR1_PWM_PIN, MOTOR1_DIR_PIN,

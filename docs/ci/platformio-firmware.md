@@ -1,18 +1,19 @@
 # PlatformIO firmware management
 
-PlatformIO is the single firmware build system for the active ESP-IDF robot,
-ESP-NOW receiver, and the three existing Arduino programs. The sources stay in
-their current folders; no sketch copies are maintained.
+PlatformIO is the single firmware build system for the active Arduino robot,
+the bench sketch, and the two native ESP-IDF environments. The sources stay in
+their current folders; no sketch copies are maintained. `firmware/archive/**`
+holds retired programs and is not built.
 
 ## Project layout
 
 | Program | PlatformIO project | Environment | Framework |
 | --- | --- | --- | --- |
-| Autonomous competition sketch | `firmware/bottlesumo_competition` | `n16r8` | Arduino-ESP32 3.3.8 |
-| Sensor/electrical test sketch | `firmware/bottlesumo_v2_test` | `n16r8` | Arduino-ESP32 3.3.8 |
+| Competition firmware | `firmware/bottlesumo_2026` | `n16r8` | Arduino-ESP32 3.3.8 |
 | Legacy movement sketch | `firmware/movement_test` | `n16r8` | Arduino-ESP32 3.3.8 |
-| Robot firmware | repository root | `robot` | ESP-IDF 6.0.1 |
-| ESP-NOW receiver | repository root | `espnow_receiver` | ESP-IDF 6.0.1 |
+| Robot firmware (archived source, still built) | repository root | `robot` | ESP-IDF 6.0.1 |
+| ESP-NOW receiver (archived source, still built) | repository root | `espnow_receiver` | ESP-IDF 6.0.1 |
+| Retired sketches | `firmware/archive/**` | not built | reference only |
 
 The root [`platformio.ini`](../../platformio.ini) uses PlatformIO Espressif32
 7.0.1 for native ESP-IDF. All projects use the checked-in
@@ -38,14 +39,13 @@ uv sync --frozen
 To build only one program:
 
 ```bash
-uv run --frozen platformio run --project-dir firmware/bottlesumo_competition -e n16r8
-uv run --frozen platformio run --project-dir firmware/bottlesumo_v2_test -e n16r8
+uv run --frozen platformio run --project-dir firmware/bottlesumo_2026 -e n16r8
 uv run --frozen platformio run --project-dir firmware/movement_test -e n16r8
 uv run --frozen platformio run -e robot -e espnow_receiver
 ```
 
-The validator fails if it discovers an Arduino sketch without a sibling
-`platformio.ini`. CI runs the same validator from
+The validator skips `firmware/archive/**` and fails if an active sketch has no
+sibling `platformio.ini`. CI runs the same validator from
 `.github/workflows/platformio-build.yml` on pushes, pull requests, and manual
 dispatches. PlatformIO build artifacts stay under ignored `.pio/` directories.
 

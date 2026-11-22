@@ -23,6 +23,8 @@ test -d "$firmware_root" || {
   exit 1
 }
 
+# firmware/archive/** holds retired programs. They are kept for reference and
+# are not part of the active build contract.
 sketch_count=0
 while IFS= read -r -d '' sketch; do
   sketch_count=$((sketch_count + 1))
@@ -36,7 +38,7 @@ while IFS= read -r -d '' sketch; do
 
   echo "Compiling PlatformIO Arduino program: $relative_sketch_dir"
   run_platformio run --project-dir "$sketch_dir" -e n16r8
-done < <(find "$firmware_root" -type d -name .pio -prune -o -type f -name '*.ino' -print0 | sort -z)
+done < <(find "$firmware_root" \( -type d -name .pio -o -type d -name archive \) -prune -o -type f -name '*.ino' -print0 | sort -z)
 
 if [[ "$sketch_count" -eq 0 ]]; then
   echo "no Arduino sketches found under $firmware_root" >&2

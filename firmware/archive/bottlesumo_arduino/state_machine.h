@@ -137,6 +137,53 @@ inline const char *reasonName(Reason r) {
 struct Range { uint16_t mm = 0; uint32_t sampledMs = 0; };
 struct Drive { int16_t left = 0; int16_t right = 0; };
 
+// Which arena arrangement this round is driven for. The two senior
+// arrangements place the bottle on a different joint line, so each has its own
+// fixed commit path. A single board is kept as the junior/bench fallback.
+enum class MapType : uint8_t { SeniorA = 0, SeniorB = 1, SingleBoard = 2 };
+
+inline const char *mapName(MapType m) {
+  switch (m) {
+    case MapType::SeniorB:     return "senior-B";
+    case MapType::SingleBoard: return "single-board";
+    default:                   return "senior-A";
+  }
+}
+
+// A commit path is a fixed list of wheel percentages at openingPwm, not a
+// search. Timings come from the arena drawings: drive along the board, turn
+// toward the joint line, then close on it.
+struct CommitLeg { uint16_t ms; int8_t leftPct; int8_t rightPct; };
+
+inline const CommitLeg *commitPlan(MapType m, uint8_t &count) {
+  static const CommitLeg seniorA[] = {
+      {1300, 100, 100},   // leave the start box along the top board
+      {420, 100, -100},   // pivot toward the joint line
+      {1700, 100, 100},   // cross the board
+      {380, 120, 80},     // arc back onto the joint
+      {1200, 100, 100},   // close the last span
+  };
+  static const CommitLeg seniorB[] = {
+      {1300, 100, 100},   // leave the start box up the vertical board
+      {420, 100, -100},   // pivot toward the joint line
+      {1600, 100, 100},   // cross the board
+      {380, 80, 120},     // arc back onto the joint
+      {1200, 100, 100},   // close the last span
+  };
+  static const CommitLeg single[] = {
+      {1400, 100, 100},   // long axis
+      {400, 100, -100},   // pivot
+      {2000, 100, 100},   // sweep the middle
+      {400, -100, 100},   // pivot back
+      {1100, 100, 100},   // second pass
+  };
+  switch (m) {
+    case MapType::SeniorB:     count = sizeof(seniorB) / sizeof(seniorB[0]); return seniorB;
+    case MapType::SingleBoard: count = sizeof(single) / sizeof(single[0]);  return single;
+    default:                   count = sizeof(seniorA) / sizeof(seniorA[0]); return seniorA;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Tuning — runtime-editable drive levels.
 //
@@ -157,26 +204,23 @@ struct Tuning {
   int16_t  pushSteerMax  = 25;   // max differential correction while pushing
   uint16_t maxPwm        = 255;  // absolute clamp, never above 255
 
-  // ---- Opening run -------------------------------------------------------
-  // The start box is fixed by the rules, so a short open-loop script is more
-  // reliable than searching: straight, pivot ~60 deg, straight again lands the
-  // robot next to the bottle. Measured on last year's table; re-time it here.
-  bool     openingEnabled    = true;
-  uint16_t openingPwm        = 140;
-  uint16_t openingForwardMs  = 1400;  // leg 1
-  uint16_t openingTurnMs     = 380;   // ~60 deg at openingPwm, measure yours
-  int8_t   openingTurnDir    = 1;     // +1 = right, -1 = left
-  uint16_t openingForward2Ms = 1200;  // leg 2
-  uint16_t openingAbortMm    = 300;   // centre sees the bottle this close -> stop the script
+  // ---- Opening commit path -----------------------------------------------
+  // The first seconds are a fixed path, not a search. Any confirmed edge
+  // escapes immediately (global rule), and a centre target inside
+  // openingAbortMm hands over early. After openingCommitMs the adaptive
+  // strategy takes over even if nothing is seen. The per-map legs are in
+  // commitPlan(); only the speed and the cap are tunable here.
+  bool     openingEnabled  = true;
+  uint16_t openingPwm      = 140;
+  uint16_t openingCommitMs = 6000;  // hard cap before Search
+  uint16_t openingAbortMm  = 300;   // centre sees the bottle this close -> hand over
 
   // ---- Carry -------------------------------------------------------------
-  // After contact, arc slowly instead of pushing straight, so the bottle is
-  // dragged along and the opponent cannot line up a clean approach.
+  // After contact, hold the same forward push at a lower level for longer, so
+  // the front face stays on the bottle all the way to the edge.
   bool     carryEnabled  = true;
-  uint16_t carryAfterMs  = 700;   // contact time before the arc starts
+  uint16_t carryAfterMs  = 700;   // contact time before the long drag starts
   uint16_t carryPwm      = 120;
-  int16_t  carryBias     = 45;    // differential that makes the arc
-  uint16_t carrySweepMs  = 900;   // swap the arc side this often
   uint16_t carryMaxMs    = 4000;  // leave Carry and go back to Push
 
   // ---- Edge robustness ---------------------------------------------------
@@ -248,6 +292,9 @@ struct Machine {
                                 // a Push <-> Carry cycle
   uint8_t carryCycles = 0;
 
+  MapType map = MapType::SeniorA;       // chosen by the start input
+  uint32_t openingStartMs = 0;
+
   Tuning tuning;
   History history;
 
@@ -269,13 +316,15 @@ struct Machine {
     if (resetStart) stateStart = now_;
   }
 
-  void startRound() {
+  void startRound(MapType choice = MapType::SeniorA,
+                  Reason why = Reason::ButtonStart) {
     if (state != State::Stopped) return;
+    map = choice;
     roundStart = now_;
     escapeCount = 0;
     carryCycles = 0;
     contactStart = now_;
-    change(State::Starting, Reason::ButtonStart);
+    change(State::Starting, why);
   }
 
   void stopRound(Reason why) {
@@ -301,8 +350,11 @@ struct Machine {
     if (emergency || now_ - roundStart >= ROUND_MS) { stopRound(Reason::Emergency); return {}; }
 
     if (state != State::Starting) {
-      for (uint8_t i = 0; i < 3; ++i) {
-        if (!r[i].sampledMs || now_ - r[i].sampledMs > RANGE_STALE_MS) {
+      // Only fitted heads are polled, so only theirs can be fresh. A bench
+      // build with one module must not stop the round for the absent heads.
+      for (uint8_t k = 0; k < TOF_HEAD_COUNT; ++k) {
+        const Range &head = r[TOF_HEADS[k]];
+        if (!head.sampledMs || now_ - head.sampledMs > RANGE_STALE_MS) {
           // A head that stops reporting ends the round; it is not a hardware
           // fault, so BUTTON1 can start again once the data is fresh.
           stopRound(Reason::StaleData);
@@ -342,7 +394,9 @@ struct Machine {
       case State::Starting:
         if (now_ - roundStart < START_DELAY_MS) return {};
         if (tuning.openingEnabled) {
-          // The opening is timed from the moment it starts, not from the button.
+          // The commit path is timed from the moment it starts, not from the
+          // button, so the start delay never shortens it.
+          openingStartMs = now_;
           change(State::Opening, Reason::StartDelayDone);
           return openingDrive(r);
         }
@@ -429,32 +483,40 @@ private:
     return searchDrive(r);
   }
 
-  // Opening run: straight, pivot, straight — open loop on purpose, because the
-  // start box is fixed and last year's field test showed this lands next to the
-  // bottle. A centre reading inside openingAbortMm ends the script early so the
-  // robot cannot drive past it.
+  // Fixed commit path: drive the map's leg list, so the opening is repeatable
+  // and comparable across rounds. It is not a search. Edges already preempt
+  // this function in tick(); the only early exit here is the bottle appearing
+  // in front of the centre head.
   Drive openingDrive(const Range (&r)[3]) {
-    if (r[1].mm && r[1].mm <= tuning.openingAbortMm) return behave(r, Reason::OpeningAbort);
-    const uint32_t t = now_ - stateStart;
-    const uint32_t leg1 = tuning.openingForwardMs;
-    const uint32_t pivotEnd = leg1 + tuning.openingTurnMs;
-    const uint32_t leg2End = pivotEnd + tuning.openingForward2Ms;
-    if (t < leg1 || (t >= pivotEnd && t < leg2End)) {
-      const int16_t pwm = tuning.apply(int16_t(tuning.openingPwm));
-      return Drive{pwm, pwm};
+    if (r[1].mm && r[1].mm <= tuning.openingAbortMm)
+      return behave(r, Reason::OpeningAbort);
+
+    const uint32_t elapsed = now_ - openingStartMs;
+    if (elapsed >= tuning.openingCommitMs) {
+      change(State::Search, Reason::OpeningDone, false);
+      return behave(r);
     }
-    if (t < pivotEnd) {
-      const int16_t pwm = tuning.apply(int16_t(tuning.turnPwm));
-      return Drive{int16_t(tuning.openingTurnDir * pwm), int16_t(-tuning.openingTurnDir * pwm)};
+
+    uint8_t count = 0;
+    const CommitLeg *plan = commitPlan(map, count);
+    uint32_t legEnd = 0;
+    for (uint8_t i = 0; i < count; ++i) {
+      legEnd += plan[i].ms;
+      if (elapsed >= legEnd) continue;
+      const int16_t base = int16_t(tuning.openingPwm);
+      const int16_t left = tuning.apply(int16_t(base * plan[i].leftPct / 100));
+      const int16_t right = tuning.apply(int16_t(base * plan[i].rightPct / 100));
+      return Drive{left, right};
     }
     change(State::Search, Reason::OpeningDone, false);
     return behave(r);
   }
 
-  // Carry: both wheels forward with a differential that alternates every
-  // carrySweepMs, so the bottle is dragged along an arc instead of straight.
-  // The side ToF readings pull the arc back toward the bottle when it drifts
-  // off centre, which is what keeps contact through the sweep.
+  // Front-face rule (CTEA 2026 Rev.1 §4): a bottle counts as an intentional
+  // push only while the marked front face stays in contact until the bottle
+  // leaves the table. A deliberate arc or spin at contact can turn the fall
+  // into a non-intentional one, so Carry keeps both wheels forward and uses
+  // only a small differential to hold the bottle in front.
   Drive carryDrive(const Range (&r)[3]) {
     if (!r[1].mm) { change(State::Search, Reason::BottleLost, false); return searchDrive(r); }
     if (now_ - stateStart >= tuning.carryMaxMs) {
@@ -462,11 +524,9 @@ private:
       change(State::Push, Reason::CarryDone);
       return targetDrive(r);
     }
-    const uint16_t sweepMs = tuning.carrySweepMs ? tuning.carrySweepMs : 1;
-    const bool flip = ((now_ - stateStart) / sweepMs) & 1;
-    int16_t steer = flip ? tuning.carryBias : int16_t(-tuning.carryBias);
-    if (r[0].mm && r[0].mm + 60 < r[1].mm) steer -= 20;
-    if (r[2].mm && r[2].mm + 60 < r[1].mm) steer += 20;
+    int16_t steer = 0;
+    if (r[0].mm && r[0].mm + 60 < r[1].mm) steer = int16_t(-tuning.pushSteerMax);
+    if (r[2].mm && r[2].mm + 60 < r[1].mm) steer = tuning.pushSteerMax;
     const int16_t speed = tuning.apply(int16_t(tuning.carryPwm));
     const int16_t steerOut = tuning.apply(steer);
     return Drive{int16_t(speed + steerOut), int16_t(speed - steerOut)};

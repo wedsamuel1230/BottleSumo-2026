@@ -8,7 +8,8 @@ pages stay easy to scan.
 
 - [ESP-IDF wireless and debugging guide](competition/esp-idf-wireless.md) - active N16R8 firmware, FreeRTOS timings, UDP/ESP-NOW, bench dashboard and OTA.
 
-- [2026 table-sumo rules](competition/table-sumo-rules-2026.md) - neutral project transcription of the attached Rev.0 rules document.
+- [2026 table-sumo rules](competition/table-sumo-rules-2026.md) - neutral project transcription of the attached Rev.1 rules document.
+- [BottleSumo 2026 strategy note](competition/bottlesumo-strategy-2026.md) - rule constraints, the map commit paths, the front-face push rule and what still needs bench measurement.
 - [Sensor and strategy design v1](competition/table-sumo-design-v1.md) - research and design proposal with its approval boundary.
 - [Design evidence ledger](competition/table-sumo-evidence-ledger.md) - source and evidence register for the design proposal.
 - [Competition firmware strategy and commissioning](competition/competition-firmware.md) - autonomous v2 program, three-head ToF wiring, Rev.1 rule analysis and physical validation gates.
@@ -23,6 +24,12 @@ pages stay easy to scan.
 
 - [ESP32-S3-DEVKITC-1-N32R16 pinout](hardware/esp32-s3-devkitc-1-n32r16-pinout.md) - board, GPIO, motor FG, LED, and firmware audit.
 - [24GP-2430 motor reference](hardware/motor-24gp-2430-reference.md) - motor listing values, FG notes, and wiring cautions.
+
+## Arduino IDE
+
+- [BottleSumo board profile](../arduino/bottlesumo-n16r8/README.md) - pinned Tools settings, the two-OTA-slot partition table and the installer for the Arduino IDE.
+- [bottlesumo_2026 firmware](../firmware/bottlesumo_2026/README.md) - Arduino + FreeRTOS rewrite: 5 ms control task, ArduinoOTA, IR calibration, Enum state machine, bench web page.
+- [movement_test bench sketch](../firmware/movement_test/README.md) - drive-train commands, PWM polarity and DIR diagnostics, Wi-Fi OTA upload.
 
 ## CI and development
 

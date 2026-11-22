@@ -7,7 +7,11 @@
 //     and the control task has confirmed the motors are at zero.
 //   * Handlers never block on motor or sensor work; they only post requests.
 #include "web.h"
+#include "wifi_defaults.h"
 #include <WebServer.h>
+#include <Wire.h>
+#include <ESPmDNS.h>
+#include <ArduinoOTA.h>
 #include <WiFi.h>
 #include <WiFiUdp.h>
 #include <Update.h>
@@ -32,14 +36,31 @@ struct WifiConfig {
 static WifiConfig wifiConfig;
 
 static bool loadWifiConfig() {
+  bool haveRecord = false;
   Preferences prefs;
-  if (!prefs.begin("bottlesumo", true)) return false;
-  WifiConfig loaded{};
-  const size_t bytes = prefs.getBytes("wifi", &loaded, sizeof(loaded));
-  prefs.end();
-  if (bytes != sizeof(loaded) || loaded.magic != WIFI_MAGIC) return false;
-  if (strlen(loaded.apPassword) < 8 || strlen(loaded.apPassword) > 63) return false;
-  wifiConfig = loaded;
+  if (prefs.begin("bottlesumo", true)) {
+    WifiConfig loaded{};
+    const size_t bytes = prefs.getBytes("wifi", &loaded, sizeof(loaded));
+    prefs.end();
+    if (bytes == sizeof(loaded) && loaded.magic == WIFI_MAGIC &&
+        strlen(loaded.apPassword) >= 8 && strlen(loaded.apPassword) <= 63) {
+      wifiConfig = loaded;
+      haveRecord = true;
+    }
+  }
+  if (!haveRecord) {
+    // First boot (or an old record): seed from wifi_local.h, the same header
+    // movement_test uses, and keep the AP password from that header too.
+    wifiConfig.magic = WIFI_MAGIC;
+    WiFi.mode(WIFI_AP);
+    snprintf(wifiConfig.apPassword, sizeof(wifiConfig.apPassword), "%s", AP_PASSWORD);
+    snprintf(wifiConfig.staSsid, sizeof(wifiConfig.staSsid), "%s", WIFI_SSID);
+    snprintf(wifiConfig.staPassword, sizeof(wifiConfig.staPassword), "%s", WIFI_PASSWORD);
+  } else if (wifiConfig.staSsid[0] == '\0' && WIFI_SSID[0] != '\0') {
+    // A saved AP-only config should still pick up credentials from the header.
+    snprintf(wifiConfig.staSsid, sizeof(wifiConfig.staSsid), "%s", WIFI_SSID);
+    snprintf(wifiConfig.staPassword, sizeof(wifiConfig.staPassword), "%s", WIFI_PASSWORD);
+  }
   return true;
 }
 
@@ -108,105 +129,160 @@ static const char indexHtml[] PROGMEM = R"HTML(<!DOCTYPE html>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>BottleSumo</title>
 <style>
-:root{--bg:#12161c;--card:#1c232d;--line:#2c3644;--fg:#e6edf3;--dim:#8b9bb0;--ok:#3fb950;--warn:#d29922;--bad:#f85149;--acc:#58a6ff}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
-header{padding:12px 16px;border-bottom:1px solid var(--line);display:flex;gap:12px;align-items:center;flex-wrap:wrap}
-h1{font-size:17px;margin:0}state{font-weight:600;padding:3px 10px;border-radius:12px;background:#233042}
-main{display:grid;grid-template-columns:repeat(auto-fit,minmax(310px,1fr));gap:12px;padding:12px}
-section{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px}
-h2{font-size:14px;margin:0 0 8px;color:var(--acc);text-transform:uppercase;letter-spacing:.04em}
-.row{display:flex;justify-content:space-between;gap:8px;padding:2px 0;border-bottom:1px dotted #263140}
+:root{--bg:#0f1115;--surface:#15181e;--line:#242830;--fg:#e6e8eb;--dim:#98a1ac;--acc:#4c8dff;--ok:#2f9e6b;--warn:#c98a2b;--bad:#c04040}
+*{box-sizing:border-box}html{color-scheme:dark}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 -apple-system,system-ui,"Segoe UI","Noto Sans TC",sans-serif;-webkit-font-smoothing:antialiased}
+header{position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 14px;background:var(--bg);border-bottom:1px solid var(--line)}
+.brand{display:flex;align-items:center;gap:8px;margin-right:auto}
+.brand b{font-size:15px;letter-spacing:.01em}
+.pill{font-size:12px;padding:3px 9px;border-radius:6px;border:1px solid var(--line);color:var(--dim)}
+.pill.on{color:#dff3e7;border-color:var(--ok)}
+.pill.bad{color:#ffd6d6;border-color:var(--bad)}
+.chips{display:flex;gap:6px;flex-wrap:wrap}
+.meta{display:flex;gap:10px;font-size:12px;color:var(--dim);width:100%}
+.chip{font-size:12px;color:var(--dim);border:1px solid var(--line);border-radius:6px;padding:2px 7px}
+.chip.ok{color:#bfe8d2;border-color:#2b6b4c}.chip.bad{color:#ffc9c9;border-color:#7a2b2b}.chip.warn{color:#f0d3a0;border-color:#6e5320}
+main{max-width:760px;margin:0 auto;padding:12px 14px 40px;display:flex;flex-direction:column;gap:12px}
+section{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:14px}
+h2{font-size:13px;font-weight:600;margin:0 0 10px;color:var(--fg)}
+.line{display:flex;gap:12px;flex-wrap:wrap;color:var(--dim);font-size:13px;margin-bottom:10px}
+.line b{color:var(--fg);font-weight:600}
+.bigbtns{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:8px 0}
+button{font:inherit;font-size:15px;min-height:48px;border-radius:10px;border:1px solid var(--line);background:#1c2027;color:var(--fg);cursor:pointer;padding:10px 14px}
+button:active{background:#242a33}
+button:disabled{opacity:.45;cursor:not-allowed}
+button small{display:block;font-size:11px;color:var(--dim);margin-top:1px}
+button.start{background:#1d6b47;border-color:#2a8a5d}
+button.stop{background:#7d2626;border-color:#a03434}
+button.primary{background:#2b4f86;border-color:#3a68ab}
+button.wide{width:100%}
+.ready{margin:10px 0 4px;padding:10px 12px;border-radius:8px;border:1px solid var(--line);font-size:14px;color:var(--dim)}
+.ready.ok{border-color:#2b6b4c;color:#bfe8d2;background:#13251c}
+.ready.bad{border-color:#7a2b2b;color:#ffc9c9;background:#241414}
+.hint{color:var(--dim);font-size:12px;margin:8px 0 0}
+.row{display:flex;justify-content:space-between;gap:8px;padding:5px 0;border-bottom:1px solid #1d2128;font-size:13px}
 .row:last-child{border-bottom:0}.k{color:var(--dim)}.v{font-variant-numeric:tabular-nums;text-align:right}
-button{background:#233042;color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:6px 10px;cursor:pointer;margin:2px 2px 2px 0}
-button:hover{border-color:var(--acc)}button:disabled{opacity:.45;cursor:not-allowed}
-button.primary{background:#1f6feb;border-color:#1f6feb}button.danger{background:#5c1f24;border-color:#8c2f33}
-input[type=number],input[type=password],input[type=text]{background:#0d1117;border:1px solid var(--line);color:var(--fg);border-radius:5px;padding:4px 6px;width:76px}
-select{background:#0d1117;border:1px solid var(--line);color:var(--fg);border-radius:5px;padding:4px 6px}
-input[type=range]{width:100%}label{color:var(--dim);font-size:12px;display:block;margin-top:6px}
-.bar{height:16px;background:#0d1117;border-radius:4px;position:relative;overflow:hidden;margin:2px 0}
+.bar{height:6px;background:#0b0e12;border-radius:3px;position:relative;overflow:hidden;margin:3px 0 6px}
 .bar>i{position:absolute;left:0;top:0;bottom:0;background:var(--acc);display:block}
-.bar>e{position:absolute;top:-2px;bottom:-2px;width:2px;background:var(--warn);display:block}
-.flag{display:inline-block;min-width:20px;text-align:center;border-radius:3px;background:#0d1117;color:var(--dim);padding:1px 3px;margin-right:3px}
-.flag.on{background:var(--bad);color:#fff}
-table{width:100%;border-collapse:collapse;font-size:12px}td,th{padding:2px 4px;border-bottom:1px solid #263140;text-align:left}
-th{color:var(--dim);font-weight:500}
-.ok{color:var(--ok)}.warn{color:var(--warn)}.bad{color:var(--bad)}
-.hint{color:var(--dim);font-size:12px;margin-top:6px}
-#log{white-space:pre-wrap;font:11px/1.4 ui-monospace,Menlo,monospace;color:var(--dim);max-height:120px;overflow:auto}
+.bar>e{position:absolute;top:0;bottom:0;width:2px;background:var(--warn);display:block}
+.flag{font-size:11px;color:var(--dim);margin-left:6px;border:1px solid var(--line);border-radius:4px;padding:0 4px}
+.flag.on{color:#ffd0d0;border-color:#7a2b2b}
+.tofList{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:8px}
+.tof{background:#0b0e12;border:1px solid var(--line);border-radius:8px;padding:8px;text-align:center}
+.tof span{display:block;font-size:11px;color:var(--dim)}
+.tof b{display:block;font-size:18px;margin-top:2px;font-variant-numeric:tabular-nums}
+.tof em{display:block;font-style:normal;font-size:10px;color:#6b7480;margin-top:2px}
+table{width:100%;border-collapse:collapse;font-size:12px}
+td,th{padding:5px 4px;border-bottom:1px solid #1d2128;text-align:left}
+th{color:var(--dim);font-weight:600}
+.ok{color:#86d3aa}.warn{color:#e0b26a}.bad{color:#f09595}
+.badge{font-size:11px;color:var(--dim);border:1px solid var(--line);border-radius:4px;padding:0 5px;margin-left:6px}
+input[type=number],input[type=password],input[type=text],select{background:#0b0e12;border:1px solid var(--line);color:var(--fg);border-radius:6px;padding:5px 6px;font:inherit}
+input[type=range]{width:100%;accent-color:var(--acc);margin:4px 0 8px}
+label{display:block;color:var(--dim);font-size:12px;margin-top:8px}
+.btnrow{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.btnrow button{flex:1 1 auto}
+details{border:1px solid var(--line);border-radius:10px;background:var(--surface)}
+details>summary{cursor:pointer;list-style:none;padding:14px;font-weight:600;font-size:14px;display:flex;justify-content:space-between}
+details>summary::-webkit-details-marker{display:none}
+details>summary::after{content:"›";color:var(--dim)}
+details[open]>summary{border-bottom:1px solid var(--line)}
+details .body{padding:0 14px 14px}
+details h3{font-size:13px;font-weight:600;color:var(--fg);margin:16px 0 8px}
+#log{white-space:pre-wrap;font:11px/1.5 ui-monospace,Menlo,monospace;color:var(--dim);max-height:160px;overflow:auto}
+code{background:#0b0e12;border:1px solid var(--line);border-radius:4px;padding:0 4px;font:12px ui-monospace,Menlo,monospace}
+@media(max-width:480px){main{padding:10px}section{padding:12px}.bigbtns button{font-size:17px}}
 </style></head><body>
-<header><h1>BottleSumo</h1><state id="state">—</state>
-  <span class="k" id="flags"></span><span class="k" id="uptime"></span><span id="link"></span></header>
+<header>
+  <div class="brand"><b>BottleSumo</b><span class="pill" id="state">—</span></div>
+  <div class="chips" id="chips"></div>
+  <div class="meta"><span id="flags"></span><span id="uptime"></span><span id="link"></span></div>
+</header>
 <main>
-<section><h2>感測器 (live)</h2>
-  <div id="qre"></div>
-  <div id="tof" style="margin-top:8px"></div>
-  <div class="hint">綠線 = 目前閾值；紅色旗 = 觸發邊緣。RAW 每 250ms 更新。</div>
-</section>
-
-<section><h2>QRE 自我校準</h2>
-  <div class="row"><span class="k">狀態</span><span class="v" id="calState">—</span></div>
-  <div id="calTable"></div>
-  <div style="margin-top:8px">
-    <button id="calFloor">1. 採安全面 (3s)</button>
-    <button id="calVoid">2. 採落差 (3s)</button>
-    <button id="calCancel">取消</button>
-  </div>
-  <div class="hint">先放車在枱面按「採安全面」；再用支架撐起車體、保持感測器正常高度、四窗都看到真實落差，按「採落差」。每通道間隔需 ≥300 counts。</div>
-</section>
-
-<section><h2>驅動力 (電壓) 調校</h2>
-  <label>總輸出比例 powerScale <span id="psVal">100</span>%</label>
-  <input type="range" id="powerScale" min="20" max="100" value="100">
-  <div id="tuning"></div>
-  <div style="margin-top:8px"><button class="primary" id="saveTuning">套用並儲存</button>
-  <button id="resetTuning">回復預設</button></div>
-  <div class="hint">只有在停止狀態才能改。改動即時生效並寫入 NVS，重開機仍保留。</div>
-</section>
-
-<section><h2>QRE 手動閾值（覆寫自動）</h2>
-  <div id="manualTable"></div>
-  <div style="margin-top:8px"><button class="primary" id="saveManual">套用手動閾值</button>
-  <button id="clearManual">全部回復自動</button></div>
-  <div class="hint">勾選＝該通道停用自動中點，改用你打的數值。「邊界」指越界時 ADC 變大還是變小。這是去年「threshold 錯又無得調」的解法：任何時候都可以手動釘死，並即時見到 RAW 值。</div>
-</section>
-
-<section><h2>開局腳本 / 帶樽 / 邊緣</h2>
-  <div id="strategy" class="hint">—</div>
-</section>
-
-<section><h2>狀態機</h2>
-  <div class="row"><span class="k">目前狀態</span><span class="v" id="smState">—</span></div>
-  <div class="row"><span class="k">已計時</span><span class="v" id="smElapsed">—</span></div>
-  <div style="margin-top:8px"><button id="startBtn">啟動</button><button class="danger" id="stopBtn">停止</button>
-  <button id="clearFault">清除 fault</button></div>
-  <table style="margin-top:8px"><thead><tr><th>時間</th><th>轉換</th><th>原因</th><th>邊</th></tr></thead>
-  <tbody id="history"></tbody></table>
-  <div class="hint">最近 64 次狀態轉換；最長可回溯整個比賽。</div>
-</section>
-
-<section><h2>OTA 更新</h2>
-  <div class="row"><span class="k">窗口</span><span class="v" id="otaWindow">—</span></div>
-  <div class="row"><span class="k">進度</span><span class="v" id="otaProg">—</span></div>
-  <div style="margin-top:8px"><button id="armOta">開啟 60s 更新窗口</button>
-  <input type="file" id="otaFile" accept=".bin"><button class="primary" id="doOta" disabled>上傳並重啟</button></div>
-  <div class="hint">必須停止。上傳後新映像會先自我測試（感測器／PSRAM／網路），失敗會自動回復到上一個可開機的 slot。</div>
-</section>
-
-<section><h2>馬達測試 (bench)</h2>
-  <div class="row"><span class="k">bench 模式</span><span class="v" id="benchState">—</span></div>
-  <div class="row"><span class="k">左</span><span class="v" id="benchL">0</span></div>
-  <input type="range" id="benchLeft" min="-255" max="255" value="0">
-  <div class="row"><span class="k">右</span><span class="v" id="benchR">0</span></div>
-  <input type="range" id="benchRight" min="-255" max="255" value="0">
-  <div style="margin-top:8px"><button class="danger" id="benchStop">停止</button></div>
-  <div class="hint">只在開機時按住 BUTTON2 的 bench 模式出現；自主比賽模式下無法驅動。</div>
-</section>
-
-<section><h2>紀錄</h2><div id="log">—</div>
 <section>
+  <div class="line"><span>地圖 <b id="mapName">—</b></span><span>狀態 <b id="smState">—</b></span><span>計時 <b id="smElapsed">—</b></span><span>更新 <b id="otaWindow">—</b></span></div>
+  <div class="ready" id="ready">檢查中…</div>
+  <div class="bigbtns" style="margin-top:10px">
+    <button class="start" id="startA">A<small>Senior A</small></button>
+    <button class="start" id="startB">B<small>Senior B</small></button>
+  </div>
+  <div class="bigbtns">
+    <button id="startC">單板</button>
+    <button class="stop" id="stopBtn">停止</button>
+  </div>
+  <p class="hint">SW2 = A、SW3 = B；比賽中任一鍵即停。</p>
+</section>
+
+<section>
+  <h2>QRE <span class="badge" id="qreState">LIVE</span></h2>
+  <div id="qre"></div>
+  <h2 style="margin-top:14px">ToF</h2>
+  <div id="tof"></div>
+  <div class="row"><span class="k">ToF 狀態</span><span class="v" id="tofState">—</span></div>
+  <div class="btnrow"><button id="tofRestart">重新初始化 ToF</button></div>
+  <p class="hint">綠線 = 目前閾值；紅色旗 = 觸發邊緣。</p>
+</section>
+
+<details id="adv">
+  <summary>進階設定</summary>
+  <div class="body">
+    <h3>QRE 自我校準</h3>
+    <div class="row"><span class="k">狀態</span><span class="v" id="calState">—</span></div>
+    <div id="calTable"></div>
+    <div class="btnrow"><button id="calFloor">1. 採安全面 (3s)</button><button id="calVoid">2. 採落差 (3s)</button><button id="calCancel">取消</button></div>
+
+    <h3>QRE 手動閾值</h3>
+    <div id="manualTable"></div>
+    <div class="btnrow"><button class="primary" id="saveManual">套用手動閾值</button><button id="clearManual">回復自動</button></div>
+
+    <h3>驅動力調校</h3>
+    <label>powerScale <span id="psVal">100</span>%</label>
+    <input type="range" id="powerScale" min="20" max="100" value="100">
+    <div id="tuning"></div>
+    <div class="btnrow"><button class="primary" id="saveTuning">套用並儲存</button><button id="resetTuning">回復預設</button></div>
+
+    <h3>開局腳本 · 帶樽 · 邊緣</h3>
+    <div id="strategy" class="hint">—</div>
+
+    <h3>馬達測試（bench）</h3>
+    <div class="row"><span class="k">bench 模式</span><span class="v" id="benchState">—</span></div>
+    <div class="row"><span class="k">左</span><span class="v" id="benchL">0</span></div>
+    <input type="range" id="benchLeft" min="-255" max="255" value="0">
+    <div class="row"><span class="k">右</span><span class="v" id="benchR">0</span></div>
+    <input type="range" id="benchRight" min="-255" max="255" value="0">
+    <div class="btnrow"><button class="stop" id="benchStop">停止</button>
+      <button class="arrow" data-l="120" data-r="120">▲</button>
+      <button class="arrow" data-l="-120" data-r="-120">▼</button>
+      <button class="arrow" data-l="-120" data-r="120">◀</button>
+      <button class="arrow" data-l="120" data-r="-120">▶</button>
+    </div>
+    <div class="row"><span class="k">trim（最近 duty 點）</span><span class="v" id="trimV">L 0 / R 0</span></div>
+    <div class="btnrow"><button id="tlM">L−</button><button id="tlP">L+</button><button id="trM">R−</button><button id="trP">R+</button></div>
+    <table id="trimTbl" style="width:100%;font-size:12px;margin-top:8px"></table>
+
+    <h3>OTA 更新</h3>
+    <div class="row"><span class="k">進度</span><span class="v" id="otaProg">—</span></div>
+    <div class="btnrow"><button id="armOta">開啟 60s 更新窗口</button><input type="file" id="otaFile" accept=".bin"><button class="primary" id="doOta" disabled>上傳並重啟</button></div>
+
+    <h3>狀態機</h3>
+    <div class="btnrow"><button id="clearFault">清除 fault</button></div>
+    <table><thead><tr><th>時間</th><th>轉換</th><th>原因</th><th>邊</th></tr></thead><tbody id="history"></tbody></table>
+
+    <h3>紀錄</h3>
+    <div id="log">—</div>
+  </div>
+</details>
 </main>
 <script>
 const $=id=>document.getElementById(id);
+let TAB='sensors';
+function showTab(t){TAB=t;
+ document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('on',b.dataset.tab===t));
+ document.querySelectorAll('.panel').forEach(p=>p.classList.toggle('on',p.id==='p-'+t));
+ if(t==='tune'||t==='cal'||t==='motor')refreshConfig();
+ if(t==='log')refreshHistory();
+}
+document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>showTab(b.dataset.tab));
 let tuning={};
 function log(m){const d=new Date();$('log').textContent='['+d.toLocaleTimeString()+'] '+m+'\n'+$('log').textContent;}
 async function api(p,o){try{const r=await fetch(p,o);const j=await r.json().catch(()=>({}));if(!r.ok){log(p+' → '+(j.error||r.status));return null;}return j;}catch(e){log(p+' 失敗');return null;}}
@@ -214,19 +290,21 @@ function bar(v,max,th){const pct=Math.max(0,Math.min(100,v/max*100));const t=th!
  return '<div class="bar"><i style="width:'+pct+'%"></i>'+(t!=null?'<e style="left:'+t+'%"></e>':'')+'</div>';}
 const QN=['左前','右前','左後','右後'];
 function drawQre(d){
- let h='';for(let i=0;i<4;i++){const q=d.qre[i];
-  h+='<div class="row"><span class="k">'+QN[i]+'</span><span class="v">'+q+' <span class="flag'+(d.edges&(1<<i)?' on':'')+'">邊</span></span></div>'
+ let h='';for(let i=0;i<4;i++){const q=d.qre[i],edge=!!(d.edges&(1<<i));
+  h+='<div class="row"><span class="k">'+QN[i]+'</span><span class="v">'+q+'<span class="flag'+(edge?' on':'')+'">'+(edge?'EDGE':'edge')+'</span></span></div>'
    +bar(q,4095,d.thresholds[i]);}
- h+='<div class="row"><span class="k">極性</span><span class="v">'+d.polarity.join(',')+'</span></div>';
- h+='<div class="row"><span class="k">分離度</span><span class="v">'+d.quality.join(',')+'</span></div>';
+ h+='<div class="row"><span class="k">極性</span><span class="v">'+d.polarity.join(' · ')+'</span></div>';
+ h+='<div class="row"><span class="k">分離度</span><span class="v">'+d.quality.join(' · ')+'</span></div>';
  $('qre').innerHTML=h;
- let t='';for(let i=0;i<3;i++){t+='<div class="row"><span class="k">'+['左','中','右'][i]+'</span><span class="v">'+(d.distance[i]?d.distance[i]+' mm':'—')+' <span class="k">'+d.rangeAge[i]+'ms</span></span></div>';}
- $('tof').innerHTML=t;
+ let t='<div class="tofList">';
+ for(let i=0;i<3;i++){t+='<div class="tof"><span>'+['左','中','右'][i]+'</span><b>'+
+  (d.distance[i]?d.distance[i]+'<small> mm</small>':'—')+'</b><em>'+d.rangeAge[i]+' ms</em></div>';}
+ $('tof').innerHTML=t+'</div>';
 }
 function drawCal(d){
- const names=['良好','可用','偏高','不良'];let h='';
+ const names=['不良','偏高','可用','良好'];let h='';
  for(let i=0;i<4;i++){const q=d.quality[i];const cls=q>=3?'ok':(q===2?'':'warn');
-  h+='<div class="row"><span class="k">'+QN[i]+'</span><span class="v '+cls+'">ratio '+d.ratio[i].toFixed(2)+' · '+names[q+1]+'</span></div>';}
+  h+='<div class="row"><span class="k">'+QN[i]+'</span><span class="v '+cls+'">ratio '+d.ratio[i].toFixed(2)+' · '+names[q]+'</span></div>';}
  $('calTable').innerHTML=h;
  $('calState').textContent=d.calibrated?(d.floorCaptured?'已校準':'已有落差'):'未校準';
 }
@@ -240,25 +318,21 @@ const TSPEC=[
  ['turnPwm',0,255,1,'轉向 PWM'],
  ['unstickPwm',0,255,1,'脫困 PWM'],
  ['pushSteerMax',0,100,1,'推樽修正上限'],
- ['openingEnabled',0,1,1,'開局腳本 0/1'],
- ['openingPwm',0,255,1,'開局 PWM'],
- ['openingForwardMs',0,4000,10,'開局 直行 ms'],
- ['openingTurnMs',0,1500,10,'開局 轉向 ms'],
- ['openingTurnDir',-1,1,2,'開局 方向 -1左/+1右'],
- ['openingForward2Ms',0,4000,10,'開局 第二段直行 ms'],
- ['openingAbortMm',0,900,10,'開局 提早接手距離 mm'],
+ ['openingEnabled',0,1,1,'固定開局 0/1'],
+ ['openingPwm',0,255,1,'固定開局 PWM'],
+ ['openingCommitMs',2000,10000,500,'固定開局時長 ms'],
+ ['openingAbortMm',0,900,10,'開局提早接手距離 mm'],
  ['carryEnabled',0,1,1,'帶樽 0/1'],
  ['carryAfterMs',0,3000,50,'帶樽 接觸多久後開始 ms'],
  ['carryPwm',0,255,1,'帶樽 PWM'],
- ['carryBias',0,120,1,'帶樽 轉向差'],
- ['carrySweepMs',100,3000,50,'帶樽 左右切換 ms'],
  ['carryMaxMs',500,8000,100,'帶樽 最長 ms'],
  ['edgeDebounceMs',0,100,5,'邊緣去抖 ms'],
  ['maxEscapesPerRound',0,30,1,'每局最多逃離（0=不限）'],
  ['maxPwm',1,255,1,'PWM 上限']
 ];
-const TDEF={powerScale:100,pushPwm:175,approachNear:115,approachFar:145,searchTurn:80,searchAdvance:100,escapePwm:105,turnPwm:85,unstickPwm:100,pushSteerMax:25,maxPwm:255,openingEnabled:1,openingPwm:140,openingForwardMs:1400,openingTurnMs:380,openingTurnDir:1,openingForward2Ms:1200,openingAbortMm:300,carryEnabled:1,carryAfterMs:700,carryPwm:120,carryBias:45,carrySweepMs:900,carryMaxMs:4000,edgeDebounceMs:25,maxEscapesPerRound:12};
+const TDEF={powerScale:100,pushPwm:175,approachNear:115,approachFar:145,searchTurn:80,searchAdvance:100,escapePwm:105,turnPwm:85,unstickPwm:100,pushSteerMax:25,maxPwm:255,openingEnabled:1,openingPwm:140,openingCommitMs:6000,openingAbortMm:300,carryEnabled:1,carryAfterMs:700,carryPwm:120,carryMaxMs:4000,edgeDebounceMs:25,maxEscapesPerRound:12};
 function drawTuning(d){
+ if($('tuning').querySelector('input:focus'))return;
  let h='';for(const [k,lo,hi,st,lab] of TSPEC){
   if(!(k in d))continue;
   h+='<label>'+lab+' (<span id="v_'+k+'">'+d[k]+'</span>)</label>'+
@@ -271,11 +345,15 @@ function drawTuning(d){
 function drawStrategy(d){
  const on=x=>x?'<span class="ok">開</span>':'<span class="k">關</span>';
  $('strategy').innerHTML=
-  '開局：'+on(d.openingEnabled)+' 直行 '+d.openingForwardMs+'ms → 轉 '+(d.openingTurnDir>0?'右':'左')+' '+d.openingTurnMs+'ms → 直行 '+d.openingForward2Ms+'ms；'+d.openingAbortMm+'mm 內提早接手<br>'+
-  '帶樽：'+on(d.carryEnabled)+' 接觸 '+d.carryAfterMs+'ms 後起弧，'+d.carrySweepMs+'ms 換邊，最長 '+d.carryMaxMs+'ms<br>'+
-  '邊緣：去抖 '+d.edgeDebounceMs+'ms，每局上限 '+d.maxEscapesPerRound+' 次';
+  '固定開局：'+on(d.openingEnabled)+' PWM '+d.openingPwm+'，上限 '+d.openingCommitMs+'ms，中心 '+d.openingAbortMm+'mm 內提早接手<br>'+
+  'Senior A：直行 1300 → 右轉 420 → 直行 1700 → 右弧 380 → 直行 1200<br>'+
+  'Senior B：直行 1300 → 右轉 420 → 直行 1600 → 左弧 380 → 直行 1200<br>'+
+  '單板：直行 1400 → 右轉 400 → 直行 2000 → 左轉 400 → 直行 1100<br>'+
+  '帶樽：'+on(d.carryEnabled)+' 接觸 '+d.carryAfterMs+'ms 後直推 '+d.carryMaxMs+'ms；正面持續接觸，只作小幅修正（規則：旋轉中掉落屬非故意）<br>'+
+  '邊緣：去抖 '+d.edgeDebounceMs+'ms，每局上限 '+d.maxEscapesPerRound+' 次（固定開局期間同樣生效）';
 }
 function drawManual(d){
+ if($('manualTable').querySelector('input:focus,select:focus'))return;
  let h='';
  for(let i=0;i<4;i++){
   h+='<div class="row"><span class="k">'+QN[i]+' <span class="flag'+(d.manual[i]?' on':'')+'">手</span></span><span class="v">'+
@@ -291,20 +369,55 @@ function drawHistory(h){
  let rows='';for(const t of h){rows+='<tr><td>'+t.at+'</td><td>'+t.from+' → '+t.to+'</td><td>'+t.reason+'</td><td>0x'+t.edges.toString(16)+'</td></tr>';}
  $('history').innerHTML=rows;
 }
+async function refreshConfig(){
+ const c=await api('/api/config');if(!c)return;
+ drawCal(c);drawStrategy(c.tuning);
+ if(!$('tuning').querySelector('input:focus')){
+  tuning=c.tuning;$('powerScale').value=tuning.powerScale;$('psVal').textContent=tuning.powerScale;}
+ drawTuning(c.tuning);
+}
+async function refreshHistory(){const hh=await api('/api/history');if(hh)drawHistory(hh);}
 async function refresh(){
  const s=await api('/api/status');if(!s)return;
  $('state').textContent=s.stateName;
- $('state').style.background=s.active?'#1f6feb':(s.faulted?'#8c2f33':'#233042');
+ $('state').style.background=s.active?'#1b4f8a':(s.faulted?'#7f1d1d':'#1d2a3a');
  $('flags').textContent=s.flagText;$('uptime').textContent=(s.uptime_ms/1000).toFixed(1)+'s';
  $('link').innerHTML=s.wifiClients?('<span class="k">client '+s.wifiClients+'</span>'):'';
+ const ts=$('tofState');
+ ts.textContent=s.tofFresh?'OK':('失敗：'+(s.tofError||'—')+(s.tofHead<3?(' · head '+s.tofHead):''));
+ $('mapName').textContent=s.mapName||'—';
+ $('smState').textContent=s.stateName;
+ $('smElapsed').textContent=(s.state_elapsed_ms/1000).toFixed(1)+' s';
  $('otaWindow').textContent=s.otaWindow?'已開啟':'未開啟';
- $('benchState').textContent=s.bench?'已啟用（停止時可驅動）':'未啟用（開機按住 BUTTON2）';
- $('startBtn').disabled=!s.canStart;$('stopBtn').disabled=!s.active;
- const r=await api('/api/raw');if(r)drawQre(r);
- const c=await api('/api/config');if(c){drawCal(c);drawTuning(c.tuning);drawStrategy(c.tuning);tuning=c.tuning;$('powerScale').value=tuning.powerScale;$('psVal').textContent=tuning.powerScale;}
- if(r)drawManual(r);
- const hh=await api('/api/history');if(hh)drawHistory(hh);
+ $('benchState').textContent=s.bench?'已啟用（停止時可驅動）':'未啟用（開機按住 SW2）';
+ const ready=s.canStart&&s.tofFresh;
+ const why=[];
+ if(s.faulted)why.push('FAULT');
+ if(!s.calibrated)why.push('未校準');
+ if(!s.tofFresh)why.push('ToF 無新資料');
+ if(s.updating)why.push('更新中');
+ if(s.bench)why.push('bench 模式');
+ const rEl=$('ready');
+ rEl.className='ready '+(ready?'ok':'bad');
+ rEl.textContent=ready?'可以開始回合（實體 SW2／SW3 或上方按鈕）':'未能開始：'+(why.join(' · ')||'條件未滿足');
+ const chip=[];
+ chip.push('<span class="chip '+(s.calibrated?'ok':'warn')+'"><i></i>校準 '+(s.calibrated?'OK':'未做')+'</span>');
+ chip.push('<span class="chip '+(s.tofFresh?'ok':'bad')+'"><i></i>ToF '+(s.tofFresh?'OK':'無資料')+'</span>');
+ if(s.faulted)chip.push('<span class="chip bad"><i></i>FAULT</span>');
+ if(s.bench)chip.push('<span class="chip warn"><i></i>BENCH</span>');
+ if(s.otaWindow)chip.push('<span class="chip warn"><i></i>OTA 窗口</span>');
+ if(s.updating)chip.push('<span class="chip warn"><i></i>寫入中</span>');
+ chip.push('<span class="chip"><i></i>'+(s.wifiClients||0)+' client</span>');
+ $('chips').innerHTML=chip.join('');
+ $('startA').disabled=!ready;$('startB').disabled=!ready;$('startC').disabled=!ready;
+ $('stopBtn').disabled=!s.active;
+ const advOpen=$('adv').open;
+ const r=await api('/api/raw');
+ if(r){drawQre(r);if(advOpen)drawManual(r);}
+ if(advOpen){await refreshConfig();await refreshHistory();}
 }
+$('adv').addEventListener('toggle',()=>{if($('adv').open){refreshConfig();refreshHistory();}});
+$('tofRestart').onclick=async()=>{const j=await api('/api/tof-restart',{method:'POST'});log('ToF 重啟 '+(j?'已送出':'失敗'));setTimeout(refresh,800);};
 $('powerScale').oninput=e=>{$('psVal').textContent=e.target.value;tuning.powerScale=+e.target.value;};
 $('saveTuning').onclick=async()=>{tuning.powerScale=+$('powerScale').value;const j=await api('/api/tuning',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(tuning)});log('tuning '+(j?'已儲存':'被拒絕'));};
 $('resetTuning').onclick=()=>{tuning={...TDEF};$('powerScale').value=100;$('psVal').textContent=100;drawTuning(tuning);drawStrategy(tuning);};
@@ -324,19 +437,46 @@ $('saveManual').onclick=async()=>{
  log('手動閾值 '+(j?'已套用':'被拒絕'));
 };
 $('clearManual').onclick=async()=>{const j=await api('/api/manual',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mask:0,high:0,t0:0,t1:0,t2:0,t3:0})});log('手動閾值 '+(j?'已清除':'被拒絕'));};
-$('startBtn').onclick=()=>api('/api/start',{method:'POST'});
+function startMap(map){api('/api/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({map})})
+ .then(j=>log('start map '+map+' '+(j?'已送出':'被拒絕')));}
+$('startA').onclick=()=>startMap(0);
+$('startB').onclick=()=>startMap(1);
+$('startC').onclick=()=>startMap(2);
 $('stopBtn').onclick=()=>api('/api/stop',{method:'POST'});
 $('clearFault').onclick=()=>api('/api/fault-clear',{method:'POST'});
 $('armOta').onclick=()=>api('/api/ota-arm',{method:'POST'}).then(j=>{if(j)$('doOta').disabled=!j.armed;});
 $('otaFile').onchange=e=>{$('doOta').disabled=!e.target.files.length;};
 $('doOta').onclick=async()=>{const f=$('otaFile').files[0];if(!f)return;log('OTA 開始 '+f.size+' bytes');
- const r=await fetch('/api/ota',{method:'POST',body:f});log('OTA '+(r.ok?'完成，重啟中':'失敗 '+r.status));};
+ // A raw body never reaches the WebServer upload callback; send multipart.
+ const fd=new FormData();fd.append('file',f,f.name);
+ const r=await fetch('/api/ota',{method:'POST',body:fd});log('OTA '+(r.ok?'完成，重啟中':'失敗 '+r.status));};
 $('benchLeft').oninput=e=>$('benchL').textContent=e.target.value;
 $('benchRight').oninput=e=>$('benchR').textContent=e.target.value;
 let benchTimer=null;
 function benchSend(){api('/api/bench',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({left:+$('benchLeft').value,right:+$('benchRight').value})});}
 $('benchLeft').onchange=$('benchRight').onchange=()=>{clearInterval(benchTimer);benchSend();benchTimer=setInterval(benchSend,200);};
 $('benchStop').onclick=()=>{clearInterval(benchTimer);$('benchLeft').value=0;$('benchRight').value=0;$('benchL').textContent=0;$('benchR').textContent=0;benchSend();};
+document.querySelectorAll('button.arrow').forEach(b=>{
+ const l=+b.dataset.l,r=+b.dataset.r;
+ b.addEventListener('pointerdown',e=>{e.preventDefault();
+  $('benchLeft').value=l;$('benchRight').value=r;$('benchL').textContent=l;$('benchR').textContent=r;
+  clearInterval(benchTimer);benchSend();benchTimer=setInterval(benchSend,200);});
+ ['pointerup','pointerleave','pointercancel'].forEach(ev=>b.addEventListener(ev,()=>$('benchStop').click()));
+});
+window.addEventListener('blur',()=>$('benchStop').click());
+document.addEventListener('visibilitychange',()=>{if(document.hidden)$('benchStop').click();});
+function trimSend(wheel,delta){
+ const duty=Math.max(Math.abs(+$('benchLeft').value),Math.abs(+$('benchRight').value),64);
+ api('/api/trim',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({wheel:wheel,delta:delta,duty:duty})}).then(refreshTrim);
+}
+$('tlM').onclick=()=>trimSend(0,-1);$('tlP').onclick=()=>trimSend(0,1);
+$('trM').onclick=()=>trimSend(1,-1);$('trP').onclick=()=>trimSend(1,1);
+function refreshTrim(){api('/api/trim').then(j=>{if(!j||!j.tl)return;
+ $('trimV').textContent='L '+j.tl[1]+' / R '+j.tr[1];
+ let h='<tr><th></th><th>L</th><th>R</th></tr>';
+ j.duty.forEach((d,i)=>{h+='<tr><td>'+d+'</td><td>'+j.tl[i]+'</td><td>'+j.tr[i]+'</td></tr>';});
+ $('trimTbl').innerHTML=h;});}
+refreshTrim();
 refresh();setInterval(refresh,250);
 </script></body></html>)HTML";
 
@@ -379,9 +519,17 @@ static void handleStatus() {
   const uint8_t progress = live.otaProgress;
   const uint8_t clients = live.wifiClients;
   const uint8_t escapes = live.escapeCount;
+  const uint8_t mapType = live.mapType;
   uint16_t stack[4] = {}, hz[4] = {};
   for (uint8_t i = 0; i < 4; ++i) { stack[i] = live.stackFree[i]; hz[i] = live.taskHz[i]; }
   unlockConfig();
+  // A start also needs a recent sample from every fitted head; the control
+  // task refuses on the same condition. 600 ms keeps the 250 ms UI refresh
+  // from flickering the button.
+  bool tofFresh = have;
+  for (uint8_t k = 0; k < TOF_HEAD_COUNT && tofFresh; ++k) {
+    if (t.range_age_ms[TOF_HEADS[k]] >= 600) tofFresh = false;
+  }
   j += ",\"calibrated\":" + String(calibrated ? 1 : 0);
   j += ",\"bench\":" + String(bench ? 1 : 0);
   j += ",\"updating\":" + String(updating ? 1 : 0);
@@ -391,6 +539,8 @@ static void handleStatus() {
   j += ",\"otaProgress\":" + String(progress);
   j += ",\"wifiClients\":" + String(clients);
   j += ",\"escapes\":" + String(escapes);
+  j += ",\"map\":" + String(mapType);
+  j += ",\"mapName\":\"" + String(mapName(MapType(mapType))) + "\"";
   j += ",\"stack\":[" + String(stack[0]) + "," + String(stack[1]) + "," +
        String(stack[2]) + "," + String(stack[3]) + "]";
   j += ",\"hz\":[" + String(hz[0]) + "," + String(hz[1]) + "," +
@@ -399,7 +549,18 @@ static void handleStatus() {
   j += ",\"stateName\":\"" + String(stateNameFromDisplay(t.state)) + "\"";
   j += ",\"active\":" + String(t.state != 0 ? 1 : 0);
   j += ",\"canStart\":" + String((calibrated && !updating && !faulted && !bench) ? 1 : 0);
+  j += ",\"tofFresh\":" + String(tofFresh ? 1 : 0);
   j += ",\"flagText\":\"" + String(flagText(t.flags)) + "\"";
+  j += ",\"tofError\":\"" + String(live.tofError) + "\"";
+  j += ",\"tofHead\":" + String(int(live.tofFailHead));
+  j += ",\"ip\":\"" +
+       (WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString()
+                                      : WiFi.softAPIP().toString()) +
+       "\"";
+  j += ",\"staRssi\":" + String(WiFi.status() == WL_CONNECTED ? WiFi.RSSI() : 0);
+  // AP and STA share one radio: once the station associates, the AP follows
+  // the router's channel, so the startup channel=6 is only a pre-join default.
+  j += ",\"channel\":" + String(WiFi.channel());
   j += "}";
   sendJson(j);
 }
@@ -471,16 +632,11 @@ static void handleConfig() {
        ",\"maxPwm\":" + String(t.maxPwm) +
        ",\"openingEnabled\":" + String(t.openingEnabled ? 1 : 0) +
        ",\"openingPwm\":" + String(t.openingPwm) +
-       ",\"openingForwardMs\":" + String(t.openingForwardMs) +
-       ",\"openingTurnMs\":" + String(t.openingTurnMs) +
-       ",\"openingTurnDir\":" + String(t.openingTurnDir) +
-       ",\"openingForward2Ms\":" + String(t.openingForward2Ms) +
+       ",\"openingCommitMs\":" + String(t.openingCommitMs) +
        ",\"openingAbortMm\":" + String(t.openingAbortMm) +
        ",\"carryEnabled\":" + String(t.carryEnabled ? 1 : 0) +
        ",\"carryAfterMs\":" + String(t.carryAfterMs) +
        ",\"carryPwm\":" + String(t.carryPwm) +
-       ",\"carryBias\":" + String(t.carryBias) +
-       ",\"carrySweepMs\":" + String(t.carrySweepMs) +
        ",\"carryMaxMs\":" + String(t.carryMaxMs) +
        ",\"edgeDebounceMs\":" + String(t.edgeDebounceMs) +
        ",\"maxEscapesPerRound\":" + String(t.maxEscapesPerRound);
@@ -538,10 +694,9 @@ static bool tuningFromJson(const String &body, Tuning &out) {
   static const char *keys[] = {"powerScale", "pushPwm", "approachNear", "approachFar",
                                "searchTurn", "searchAdvance", "escapePwm", "turnPwm",
                                "unstickPwm", "pushSteerMax", "maxPwm",
-                               "openingEnabled", "openingPwm", "openingForwardMs",
-                               "openingTurnMs", "openingTurnDir", "openingForward2Ms",
+                               "openingEnabled", "openingPwm", "openingCommitMs",
                                "openingAbortMm", "carryEnabled", "carryAfterMs",
-                               "carryPwm", "carryBias", "carrySweepMs", "carryMaxMs",
+                               "carryPwm", "carryMaxMs",
                                "edgeDebounceMs", "maxEscapesPerRound"};
   Tuning t = out;
   for (const char *key : keys) {
@@ -567,16 +722,11 @@ static bool tuningFromJson(const String &body, Tuning &out) {
     else if (String(key) == "maxPwm") t.maxPwm = uint16_t(constrain(value, 1, 255));
     else if (String(key) == "openingEnabled") t.openingEnabled = value != 0;
     else if (String(key) == "openingPwm") t.openingPwm = uint16_t(constrain(value, 0, 255));
-    else if (String(key) == "openingForwardMs") t.openingForwardMs = uint16_t(constrain(value, 0, 4000));
-    else if (String(key) == "openingTurnMs") t.openingTurnMs = uint16_t(constrain(value, 0, 1500));
-    else if (String(key) == "openingTurnDir") t.openingTurnDir = value < 0 ? -1 : 1;
-    else if (String(key) == "openingForward2Ms") t.openingForward2Ms = uint16_t(constrain(value, 0, 4000));
+    else if (String(key) == "openingCommitMs") t.openingCommitMs = uint16_t(constrain(value, 2000, 10000));
     else if (String(key) == "openingAbortMm") t.openingAbortMm = uint16_t(constrain(value, 0, 900));
     else if (String(key) == "carryEnabled") t.carryEnabled = value != 0;
     else if (String(key) == "carryAfterMs") t.carryAfterMs = uint16_t(constrain(value, 0, 3000));
     else if (String(key) == "carryPwm") t.carryPwm = uint16_t(constrain(value, 0, 255));
-    else if (String(key) == "carryBias") t.carryBias = int16_t(constrain(value, -120, 120));
-    else if (String(key) == "carrySweepMs") t.carrySweepMs = uint16_t(constrain(value, 50, 3000));
     else if (String(key) == "carryMaxMs") t.carryMaxMs = uint16_t(constrain(value, 200, 8000));
     else if (String(key) == "edgeDebounceMs") t.edgeDebounceMs = uint8_t(constrain(value, 0, 100));
     else if (String(key) == "maxEscapesPerRound") t.maxEscapesPerRound = uint8_t(constrain(value, 0, 30));
@@ -737,10 +887,41 @@ static uint32_t lastTelemetry = 0;
 
 void webBegin() {
   loadWifiConfig();
-  WiFi.setAutoReconnect(false);
-  WiFi.mode(WIFI_AP);
-  WiFi.softAP("BottleSumo", wifiConfig.apPassword, wifiConfig.channel, false, 4);
+  const bool sta = wifiConfig.staSsid[0] != '\0';
+  WiFi.setAutoReconnect(sta);
+  WiFi.mode(sta ? WIFI_AP_STA : WIFI_AP);
+  WiFi.softAP(AP_SSID, wifiConfig.apPassword, wifiConfig.channel, false, 4);
   WiFi.softAPsetHostname("bottlesumo");
+  if (sta) {
+    WiFi.setSleep(false);
+    WiFi.begin(wifiConfig.staSsid, wifiConfig.staPassword);
+    Serial.printf("STA: joining \"%s\"\n", wifiConfig.staSsid);
+    MDNS.begin("bottlesumo");
+    MDNS.addService("http", "tcp", 80);
+  }
+  // Arduino OTA (espota) is the update path: it needs no armed window and no
+  // HTTP handler, and works on the AP as well as on the station link.
+  ArduinoOTA.setHostname("bottlesumo");
+  if (OTA_PASSWORD[0] != '\0') ArduinoOTA.setPassword(OTA_PASSWORD);
+  ArduinoOTA.onStart([]() {
+    lockConfig();
+    live.updating = true;
+    unlockConfig();
+    Serial.println("OTA: upload starting, outputs stopping");
+  });
+  ArduinoOTA.onEnd([]() {
+    lockConfig();
+    live.updating = false;
+    unlockConfig();
+    Serial.println("OTA: finished, rebooting");
+  });
+  ArduinoOTA.onError([](ota_error_t error) {
+    lockConfig();
+    live.updating = false;
+    unlockConfig();
+    Serial.printf("OTA: error %u\n", static_cast<unsigned>(error));
+  });
+  ArduinoOTA.begin();
   Serial.print("AP IP: ");
   Serial.println(WiFi.softAPIP());
 
@@ -755,7 +936,14 @@ void webBegin() {
   server.on("/api/calibrate/floor", HTTP_POST, [] { handleCalibrate('f'); });
   server.on("/api/calibrate/void", HTTP_POST, [] { handleCalibrate('e'); });
   server.on("/api/calibrate/cancel", HTTP_POST, [] { handleCalibrate(0); });
-  server.on("/api/start", HTTP_POST, [] { sendRequest(Command::Start); sendJson("{\"ok\":1}"); });
+  server.on("/api/start", HTTP_POST, [] {
+    const String body = server.arg("plain");
+    const int at = body.indexOf("\"map\"");
+    const int colon = at >= 0 ? body.indexOf(':', at) : -1;
+    const int map = colon >= 0 ? constrain(body.substring(colon + 1).toInt(), 0, 2) : 0;
+    sendRequest(Command::Start, int16_t(map), 0, Reason::WebStart);
+    sendJson(String("{\"ok\":1,\"map\":") + map + "}");
+  });
   server.on("/api/stop", HTTP_POST, [] { sendRequest(Command::Stop); sendJson("{\"ok\":1}"); });
   server.on("/api/fault-clear", HTTP_POST, [] { sendRequest(Command::ClearFault); sendJson("{\"ok\":1}"); });
   server.on("/api/bench", HTTP_POST, [] {
@@ -768,6 +956,78 @@ void webBegin() {
                 int16_t(constrain(body.substring(lc + 1).toInt(), -255, 255)),
                 int16_t(constrain(body.substring(rc + 1).toInt(), -255, 255)));
     sendJson("{\"ok\":1}");
+  });
+  server.on("/api/trim", HTTP_GET, [] {
+    String j = "{\"ok\":1,\"duty\":[";
+    for (uint8_t i = 0; i < TrimTable::N; ++i) {
+      if (i) j += ",";
+      j += String(trimTable.duty[i]);
+    }
+    j += "],\"tl\":[";
+    for (uint8_t i = 0; i < TrimTable::N; ++i) {
+      if (i) j += ",";
+      j += String(trimTable.trim[0][i]);
+    }
+    j += "],\"tr\":[";
+    for (uint8_t i = 0; i < TrimTable::N; ++i) {
+      if (i) j += ",";
+      j += String(trimTable.trim[1][i]);
+    }
+    j += "]}";
+    sendJson(j);
+  });
+  server.on("/api/trim", HTTP_POST, [] {
+    if (!robotStopped()) { sendReject(409, "行進中不可改 trim"); return; }
+    const String body = server.arg("plain");
+    auto intAt = [&](const char *key, int fallback) {
+      const int at = body.indexOf(key);
+      if (at < 0) return fallback;
+      const int colon = body.indexOf(':', at + strlen(key));
+      if (colon < 0) return fallback;
+      return int(body.substring(colon + 1).toInt());
+    };
+    const int wheel = intAt("\"wheel\"", -1);
+    const int delta = intAt("\"delta\"", 0);
+    const int duty = intAt("\"duty\"", 120);
+    if (wheel < 0 || wheel > 1 || delta == 0) { sendReject(400, "wheel/delta 不正確"); return; }
+    const uint8_t point = trimTable.pointFor(duty);
+    int next = int(trimTable.trim[wheel][point]) + (delta > 0 ? 1 : -1);
+    if (next > 40) next = 40;
+    if (next < -40) next = -40;
+    trimTable.trim[wheel][point] = int8_t(next);
+    saveTrimTable();
+    String j = "{\"ok\":1,\"wheel\":" + String(wheel) + ",\"point\":" + String(point) +
+               ",\"value\":" + String(trimTable.trim[wheel][point]) + "}";
+    sendJson(j);
+  });
+  server.on("/api/tof-restart", HTTP_POST, [] {
+    tofRestartRequest = true;
+    sendJson("{\"ok\":1}");
+  });
+  server.on("/api/i2c", HTTP_GET, [] {
+    i2cProbe.ready = false;
+    i2cProbe.request = true;
+    const uint32_t start = millis();
+    while (!i2cProbe.ready && millis() - start < 800) delay(5);
+    if (!i2cProbe.ready) { sendReject(503, "bus busy"); return; }
+    String j = "{\"ok\":1,\"ack\":[";
+    bool first = true;
+    for (uint8_t a = 8; a < 120; ++a) {
+      if (i2cProbe.code[a - 8] != 0) continue;
+      if (!first) j += ",";
+      j += String(a);
+      first = false;
+    }
+    j += "],\"codes\":{";
+    // Histogram of endTransmission codes: 0 ack, 2 addr nack, 3 data nack, 4 other.
+    for (uint8_t c = 0; c < 5; ++c) {
+      uint16_t n = 0;
+      for (uint8_t a = 8; a < 120; ++a) if (i2cProbe.code[a - 8] == c) ++n;
+      if (c) j += ",";
+      j += "\"" + String(c) + "\":" + String(n);
+    }
+    j += "},\"model29\":" + String(int(i2cProbe.model29)) + "}";
+    sendJson(j);
   });
   server.on("/api/reset", HTTP_POST, [] { sendJson("{\"ok\":1}"); delay(200); ESP.restart(); });
   server.on("/api/ota-arm", HTTP_POST, handleOtaArm);
@@ -783,6 +1043,7 @@ void webTask(void *arg) {
   TickType_t wake = xTaskGetTickCount();
   TaskHealth health;
   while (true) {
+    ArduinoOTA.handle();
     server.handleClient();
     health.sample(2, millis());
     lockConfig();

@@ -1,0 +1,22 @@
+// Copy this file to wifi_local.h in the same folder and fill in the values.
+// wifi_local.h is gitignored: never commit the real password.
+#pragma once
+
+// Home Wi-Fi the robot joins as a station. 2.4 GHz only; the ESP32-S3 radio
+// has no 5 GHz support.
+#define WIFI_SSID     "your-home-ssid"
+#define WIFI_PASSWORD "your-home-password"
+
+// mDNS name; the robot answers as <OTA_HOSTNAME>.local and the Arduino IDE
+// lists it under Tools > Port as a network port.
+#define OTA_HOSTNAME  "bottlesumo-move"
+
+// Leave empty to accept unauthenticated OTA on the LAN. Any device on that LAN
+// could then replace the firmware, so set a password when the network is
+// shared.
+#define OTA_PASSWORD  "change-me"
+
+// Bench access point: the robot's own WPA2 network with the control page at
+// http://192.168.4.1/. WPA2 needs at least 8 characters. Uncomment to rename.
+// #define AP_SSID     "BottleSumo-Bench"
+// #define AP_PASSWORD "bottlesumo"

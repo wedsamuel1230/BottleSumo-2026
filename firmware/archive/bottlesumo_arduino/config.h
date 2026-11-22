@@ -25,20 +25,42 @@ constexpr uint32_t CPU_MHZ = 240;
 constexpr uint32_t PSRAM_EXPECTED_MB = 8;
 
 // ---- Pins (N16R8, confirmed) ----------------------------------------------
-// QRE order is front-left, front-right, rear-left, rear-right.
-// ADC1 channels are 0, 1, 3, 4 on GPIO 1, 2, 4, 5.
-constexpr uint8_t PIN_QRE[4]   = {1, 2, 4, 5};
+// QRE corners measured on the assembled robot, front = the ToF side:
+//   front-left GPIO4, front-right GPIO1, rear-left GPIO5, rear-right GPIO2.
+// The array order is what state_machine.h relies on: bits 0/1 = front pair,
+// bits 2/3 = rear pair, bits 0/2 = left side.
+constexpr uint8_t PIN_QRE_FL = 4;
+constexpr uint8_t PIN_QRE_FR = 1;
+constexpr uint8_t PIN_QRE_RL = 5;
+constexpr uint8_t PIN_QRE_RR = 2;
+constexpr uint8_t PIN_QRE[4]   = {PIN_QRE_FL, PIN_QRE_FR, PIN_QRE_RL, PIN_QRE_RR};
 constexpr uint8_t PIN_PWM[2]   = {10, 13};   // left, right
 constexpr uint8_t PIN_DIR[2]   = {11, 14};
+// Reported from the bench: duty 0, a pin held low, ran the wheel at full
+// speed. That points to an active-low PWM input, so the LEDC output is
+// inverted: command 0 stops, 255 is full. Verify with 0 = stop and 255 = full
+// before a powered drive; if 255 stops, the flag is wrong. Set an entry to
+// false for a driver that switches on HIGH.
+constexpr bool PWM_ACTIVE_LOW[2] = {true, true};
 constexpr uint8_t PIN_FG[2]    = {9, 12};
 constexpr uint8_t PIN_XSHUT[3] = {6, 7, 15}; // left, center, right
 constexpr uint8_t PIN_SDA      = 17;
 constexpr uint8_t PIN_SCL      = 16;
 constexpr uint8_t PIN_LED[2]   = {48, 47};   // status LEDs, active high
-constexpr uint8_t PIN_BTN_START = 41;        // HIGH when pressed (external pull-down)
-constexpr uint8_t PIN_BTN_STOP  = 42;        // HIGH when pressed
+constexpr uint8_t PIN_SW2      = 42;   // start map A (single board); HIGH pressed
+constexpr uint8_t PIN_SW3      = 41;   // start map B (offset double); HIGH pressed
 
 constexpr uint8_t TOF_ADDRESS[3] = {0x30, 0x31, 0x32}; // reassigned every boot
+
+// ---- ToF heads actually fitted --------------------------------------------
+// The competition build fits three heads. A bench build with one module fits
+// it in a single slot and lists only that head: unused XSHUT lines are then
+// never driven, the address stays per head, and the start gate and OTA
+// self-test wait only for the fitted heads. A single center head (GPIO7) sees
+// a target but has no bearing, so the state machine keeps its scan pattern
+// instead of turning toward a side head.
+constexpr uint8_t TOF_HEAD_COUNT = 1;
+constexpr uint8_t TOF_HEADS[TOF_HEAD_COUNT] = {1}; // 0 = left, 1 = center, 2 = right
 
 // ---- PWM / control ---------------------------------------------------------
 constexpr uint32_t PWM_HZ = 20000;
@@ -61,8 +83,10 @@ constexpr uint32_t BOOT_VERIFY_MS = 5000;     // self-test before OTA confirm
 // Set HARDWARE_CONFIRMED = true only after the bench checks in README.md.
 // Motors stay disabled while this is false.
 constexpr bool HARDWARE_CONFIRMED = false;
-// Measure each wheel independently and change these if a wheel runs backwards.
-constexpr bool FORWARD_LEVEL[2] = {true, true};
+// Measured default from the movement bench: the gearboxes are mounted
+// mirrored, so a straight command needs opposite levels. Equal levels spin the
+// robot in place. Flip an entry only after watching that wheel run the other way.
+constexpr bool FORWARD_LEVEL[2] = {true, false};
 // FG pulses are diagnostic only until their voltage and pull-up are confirmed.
 constexpr bool FG_CONNECTED = false;
 
@@ -86,8 +110,8 @@ constexpr uint32_t STACK_SERVICE = 4096;
 // ---- Persistence keys ------------------------------------------------------
 // Bumped when the stored layouts change: an old record is then rejected and
 // the robot demands a fresh calibration instead of using stale geometry.
-constexpr uint32_t CAL_MAGIC   = 0x42534D34; // 'BSM4'  (manual thresholds)
-constexpr uint32_t TUNING_MAGIC = 0x42535432; // 'BST2'  (opening + carry)
+constexpr uint32_t CAL_MAGIC   = 0x42534D35; // 'BSM5'  (QRE reorder: old records rejected)
+constexpr uint32_t TUNING_MAGIC = 0x42535434; // 'BST4'  (commit path + turn-drag)
 constexpr uint32_t WIFI_MAGIC  = 0x42535749;  // 'BSWI'
 
 // ---- Display state codes (telemetry / web UI) ------------------------------
