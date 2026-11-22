@@ -157,13 +157,24 @@ distance, Wi-Fi link and per-task timing.
 Debug ignores the edge rules on purpose. Put the robot on a stand before you
 press a drive button; the motors stop 500 ms after the last command.
 
-## 8. Not yet verified on hardware
+## 8. Bench checklist (not yet run)
 
-- Wheel direction, PWM polarity and stopping distance.
-- IR calibration on the real table and tape.
-- ToF init at 0x31 after a warm reset, and the 350 mm attack window.
-- Route timing and turning angle on the current battery.
-- Actual task `maxUs` and jitter; the budgets in section 1 are targets.
+Run these in order. Each row needs eyes on the robot; the page alone does not
+prove direction, angle or escape direction.
+
+| Step | Setup | Action | Pass criterion |
+| --- | --- | --- | --- |
+| 1 | Robot on the real table | `POST /api/calibrate?mode=floor` | progress reaches 100, `calibrated` still 0 |
+| 2 | Robot supported, four windows over the drop | `POST /api/calibrate?mode=void` | `calibrated` becomes 1, four thresholds between the clusters |
+| 3 | Wheels off the ground | Debug, hold 前 / 後 | both wheels turn the commanded way, stop on release |
+| 4 | Wheels off the ground | hold 左轉 / 右轉 | robot yaws left / right, not translate |
+| 5 | Wheels off the ground | leave a drive command unsent | motors stop within 500 ms |
+| 6 | Table, clear route | Start A | forward 1 500 ms, spin right 300 ms, forward 3 500 ms, then `search` |
+| 7 | Table, bottle at 30–40 cm | Start A, let it search | `attack` at ≤350 mm, push forward |
+| 8 | Bottle removed during attack | Start A | `hold` for 3.5 s, then `search` |
+| 9 | One sensor over the edge | Debug off, start | `escape` starts within 20–25 ms of the confirmed bit |
+| 10 | Three sensors over the edge | start | state `failed`, motors stop, no escape |
+| 11 | Full 120 s round | start | no `Unstick`/deadlock, record `ctrlUs`, `netUs`, misses |
 
 Compilation proves the code builds for Arduino-ESP32 3.3.8. It proves nothing
 about motor direction, IR polarity, ToF range or powered safety.
