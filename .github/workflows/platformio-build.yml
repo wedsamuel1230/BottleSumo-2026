@@ -34,7 +34,7 @@ jobs:
           /tmp/protocol-test
           uv run --frozen python -m unittest discover -s tests -p test_bottlesumo_debug.py
           node tests/dashboard-keyboard-test.js
-          c++ -std=c++17 -Wall -Wextra -Werror -Ifirmware/bottlesumo_idf/components/vl53l0x/tests/stubs -Ifirmware/bottlesumo_idf/components/vl53l0x/include firmware/bottlesumo_idf/components/vl53l0x/tests/host_check.cpp firmware/bottlesumo_idf/components/vl53l0x/VL53L0X.cpp -o /tmp/tof-test
+          c++ -std=c++17 -Wall -Wextra -Werror -Ifirmware/archive/bottlesumo_idf/components/vl53l0x/tests/stubs -Ifirmware/archive/bottlesumo_idf/components/vl53l0x/include firmware/archive/bottlesumo_idf/components/vl53l0x/tests/host_check.cpp firmware/archive/bottlesumo_idf/components/vl53l0x/VL53L0X.cpp -o /tmp/tof-test
           /tmp/tof-test
 
       - name: Compile every PlatformIO firmware project

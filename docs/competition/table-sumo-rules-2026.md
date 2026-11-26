@@ -1,9 +1,9 @@
 # 2026 Table-Sumo Competition Rules
 
-Revision: `2026 Rev.0`
+Revision: `2026 Rev.1`
 
 This is a neutral project reference transcribed from the attached 2026 rules
-document. The document name and organizer branding are intentionally omitted.
+document ([CTEA 2026 Rev.1](https://ctea.org.hk/media/attachments/2026/08/15/2026_rules_06.pdf)).
 The live rules publication and the referee committee's decisions control if a
 later revision or event-day announcement differs from this reference.
 

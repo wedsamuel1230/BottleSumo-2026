@@ -23,6 +23,7 @@
 #include <esp_psram.h>
 #include <esp_random.h>
 #include <nvs_flash.h>
+#include <Preferences.h>
 #include "config.h"
 #include "state_machine.h"
 #include "sensors.h"
@@ -33,7 +34,32 @@
 using namespace BS;
 
 namespace BS {
+
+void saveTrimTable() {
+  Preferences prefs;
+  if (!prefs.begin("trimtab", false)) return;
+  prefs.putBytes("t", trimTable.trim, sizeof(trimTable.trim));
+  prefs.end();
+}
+
+void loadTrimTable() {
+  Preferences prefs;
+  if (prefs.begin("trimtab", true)) {
+    prefs.getBytes("t", trimTable.trim, sizeof(trimTable.trim));
+    prefs.end();
+  }
+  for (uint8_t w = 0; w < 2; ++w) {
+    for (uint8_t k = 0; k < TrimTable::N; ++k) {
+      if (trimTable.trim[w][k] > 40) trimTable.trim[w][k] = 40;
+      if (trimTable.trim[w][k] < -40) trimTable.trim[w][k] = -40;
+    }
+  }
+}
+
 Live live;
+TrimTable trimTable;
+volatile bool tofRestartRequest = false;
+I2cProbeResult i2cProbe;
 QueueHandle_t telemetryQueue = nullptr;
 QueueHandle_t requestQueue = nullptr;
 SemaphoreHandle_t configMutex = nullptr;
@@ -58,7 +84,7 @@ uint8_t lastHistoryCount = 0;
 uint8_t lastDisplay = 255;
 uint32_t stateChangedMs = 0;
 
-// Bench drive (web sliders only; physically selected at boot with BUTTON2).
+// Bench drive (web sliders only; physically selected at boot with SW2).
 int16_t benchDrive[2] = {};
 uint32_t benchLease = 0;
 
@@ -73,14 +99,25 @@ QueueHandle_t saveQueue = nullptr;
 // ---------------------------------------------------------------------------
 // Motor output
 // ---------------------------------------------------------------------------
+// Resting level of the driver's PWM input. An active-low input switches on
+// when the pin is low, so the pin must sit high whenever no speed is
+// commanded, including the not-attached and detach failure paths.
+inline uint8_t idlePwmLevel(uint8_t i) { return PWM_ACTIVE_LOW[i] ? HIGH : LOW; }
+
+// The polarity is applied in duty space, not with ledcOutputInvert(): the
+// written duty stays a plain number that is easy to check against the pin.
+inline uint8_t driverDuty(uint8_t i, uint8_t duty) {
+  return PWM_ACTIVE_LOW[i] ? uint8_t(255 - duty) : duty;
+}
+
 bool writeDuty(uint8_t i, uint8_t duty) {
   if (!pwmAttached[i]) return duty == 0;
-  if (!ledcWrite(PIN_PWM[i], duty)) {
+  if (!ledcWrite(PIN_PWM[i], driverDuty(i, duty))) {
     // A driver failure must still remove the PWM signal from the pin.
     ledcDetach(PIN_PWM[i]);
     pwmAttached[i] = false;
     pinMode(PIN_PWM[i], OUTPUT);
-    digitalWrite(PIN_PWM[i], LOW);
+    digitalWrite(PIN_PWM[i], idlePwmLevel(i));
     return false;
   }
   return true;
@@ -108,7 +145,10 @@ bool setWheel(uint8_t i, int requested, uint32_t now) {
     m.direction = int8_t(direction);
   }
   const int magnitude = requested < 0 ? -requested : requested;
-  const int desired = magnitude > 255 ? 255 : magnitude;
+  // Fixed per-wheel offset from the bench trim table; the FG tacho is not
+  // usable on this build, so this is the only wheel matching.
+  const int biased = magnitude + int(trimTable.at(i, magnitude));
+  const int desired = biased < 0 ? 0 : (biased > 255 ? 255 : biased);
   m.duty = uint8_t(desired > m.duty
                    ? (int(m.duty) + RAMP_STEP < desired ? int(m.duty) + RAMP_STEP : desired)
                    : desired);
@@ -145,9 +185,31 @@ void beginCalibration(char mode, uint32_t now) {
 
 void handleRequest(const Request &r, uint32_t now) {
   switch (r.command) {
-    case Command::Start:
-      if (canStartRound()) machine.startRound();
+    case Command::Start: {
+      if (!canStartRound()) {
+        lockConfig();
+        const bool calibratedNow = live.calibrated;
+        unlockConfig();
+        Serial.printf("START refused: state=%s confirmed=%d calibrated=%d fault=%d\n",
+                      stateName(machine.state), HARDWARE_CONFIRMED, calibratedNow,
+                      faulted);
+        break;
+      }
+      if (!(tofHealthy && tof.fresh(now))) {
+        Serial.println("START refused: ToF has no fresh sample");
+        break;
+      }
+      const MapType map = r.a == 1 ? MapType::SeniorB
+                        : r.a == 2 ? MapType::SingleBoard
+                                   : MapType::SeniorA;
+      const Reason why = r.why == Reason::None ? Reason::WebStart : r.why;
+      machine.startRound(map, why);
+      lockConfig();
+      live.mapType = uint8_t(map);
+      unlockConfig();
+      Serial.printf("START %s via %s\n", mapName(map), reasonName(why));
       break;
+    }
     case Command::Stop:
       machine.stopRound(Reason::WebStop);
       break;
@@ -199,10 +261,9 @@ void controlTask(void *arg) {
   uint32_t lastControlMax = 0;
   uint32_t deadlineMisses = 0;
   uint32_t sequence = 0;
-  bool startRaw = false, startStable = false;
-  uint32_t startChanged = 0;
-  bool stopTracking = false, windowArmed = false;
-  uint32_t stopHoldStart = 0;
+  struct ButtonState { bool raw = false, stable = false; uint32_t changed = 0; };
+  ButtonState switches[2];
+  bool startPending[2] = {false, false};
   TaskHealth health;
 
   while (true) {
@@ -226,40 +287,57 @@ void controlTask(void *arg) {
     edgeFilter.confirmMs = machine.tuning.edgeDebounceMs;
     edges = edgeFilter.update(now, rawEdges);
 
-    // ---- Buttons ----
-    const bool stopHeld = digitalRead(PIN_BTN_STOP) == HIGH;
-    const bool startHeld = digitalRead(PIN_BTN_START) == HIGH;
-    if (startHeld != startRaw) { startRaw = startHeld; startChanged = now; }
-    if (now - startChanged >= 30 && startHeld != startStable) {
-      startStable = startHeld;
-      if (startHeld && !stopHeld && machine.state == State::Fault) {
-        // A budget/edge fault is cleared by the same press that starts the
-        // round, so a misfire does not need a reboot.
-        machine.clearFault();
-        faulted = false;
-      }
-      if (startHeld && !stopHeld && canStartRound()) {
-        bool fresh = tofHealthy;
-        for (uint8_t i = 0; i < 3; ++i) {
-          if (!tof.ranges[i].sampledMs || now - tof.ranges[i].sampledMs > RANGE_STALE_MS) fresh = false;
-        }
-        if (fresh) machine.startRound();
-      }
-    }
+    // ---- Switches: SW2 starts map A, SW3 starts map B; either stops ----
+    // A start fires on release, so the same press cannot look like an
+    // emergency stop on the next tick. A press during a round stops at once.
+    static const uint8_t kSwitchPins[2] = {PIN_SW2, PIN_SW3};
+    const bool stopHeld = digitalRead(PIN_SW2) == HIGH || digitalRead(PIN_SW3) == HIGH;
+    for (uint8_t i = 0; i < 2; ++i) {
+      ButtonState &b = switches[i];
+      const bool held = digitalRead(kSwitchPins[i]) == HIGH;
+      if (held != b.raw) { b.raw = held; b.changed = now; }
+      if (now - b.changed < 30 || held == b.stable) continue;
+      b.stable = held;
 
-    // ---- OTA window: hold BUTTON2 for 2 s while stopped ----
-    if (stopHeld) {
-      machine.stopRound(Reason::ButtonStop);
-      if (!stopTracking) { stopHoldStart = now; stopTracking = true; }
-      lockConfig();
-      if (!windowArmed && now - stopHoldStart >= 2000 && !live.updating) {
-        live.otaWindowArmed = true;
-        live.otaWindowUntil = now + OTA_WINDOW_MS;
-        windowArmed = true;
+      if (held) {
+        if (machine.active()) {
+          machine.stopRound(Reason::ButtonStop);
+        } else {
+          if (machine.state == State::Fault) {
+            // A budget/edge fault is cleared by the same press that starts
+            // the round, so a misfire does not need a reboot.
+            machine.clearFault();
+            faulted = false;
+          }
+          startPending[i] = true;
+        }
+        continue;
       }
-      unlockConfig();
-    } else {
-      stopTracking = windowArmed = false;
+      if (!startPending[i]) continue;
+      startPending[i] = false;
+
+      const MapType map = i == 0 ? MapType::SeniorA : MapType::SeniorB;
+      if (!canStartRound()) {
+        // A refused start must say why; otherwise the robot looks dead.
+        lockConfig();
+        const bool floorCaptured = live.floorCaptured;
+        const bool benchMode = live.benchMode;
+        const bool updating = live.updating;
+        unlockConfig();
+        Serial.printf("START refused: state=%s confirmed=%d calibrated=%d "
+                      "floor=%d bench=%d updating=%d fault=%d edges=0x%X tof=%d\n",
+                      stateName(machine.state), HARDWARE_CONFIRMED, calibrated,
+                      floorCaptured, benchMode, updating, faulted, edges,
+                      tofHealthy && tof.fresh(now));
+      } else if (!(tofHealthy && tof.fresh(now))) {
+        Serial.println("START refused: ToF has no fresh sample");
+      } else {
+        machine.startRound(map, Reason::ButtonStart);
+        lockConfig();
+        live.mapType = uint8_t(map);
+        unlockConfig();
+        Serial.printf("START %s via %s\n", mapName(map), i == 0 ? "SW2" : "SW3");
+      }
     }
 
     // ---- Commands ----
@@ -408,12 +486,51 @@ void tofTask(void *arg) {
   TaskHealth health;
   if (!tof.begin()) {
     faulted = true;
-    Serial.println("ToF init failed (XSHUT wiring / I2C)");
+    if (tof.failHead < 3) {
+      Serial.printf("ToF init failed (XSHUT wiring / I2C): head %u, GPIO%u, %s\n",
+                    tof.failHead, PIN_XSHUT[tof.failHead],
+                    tof.fail ? tof.fail : "begin");
+    } else {
+      Serial.println("ToF init failed (XSHUT wiring / I2C)");
+    }
+    lockConfig();
+    snprintf(live.tofError, sizeof live.tofError, "%s", tof.fail ? tof.fail : "begin");
+    live.tofFailHead = tof.failHead;
+    unlockConfig();
   } else {
     tofHealthy = true;
-    Serial.println("ToF: 3 heads initialised");
+    Serial.printf("ToF: %u head(s) initialised\n", TOF_HEAD_COUNT);
   }
   while (true) {
+    if (i2cProbe.request) {
+      i2cProbe.request = false;
+      i2cProbe.ready = false;
+      for (uint8_t a = 8; a < 120; ++a) {
+        Wire.beginTransmission(a);
+        i2cProbe.code[a - 8] = Wire.endTransmission();
+      }
+      i2cProbe.model29 = -1;
+      Wire.beginTransmission(0x29);
+      Wire.write(uint8_t(0xC0));
+      if (Wire.endTransmission(false) == 0 && Wire.requestFrom(uint8_t(0x29), uint8_t(1)) == 1) {
+        i2cProbe.model29 = Wire.read();
+      }
+      i2cProbe.ready = true;
+    }
+    if (tofRestartRequest) {
+      tofRestartRequest = false;
+      tofHealthy = tof.begin();
+      faulted = !tofHealthy;
+      lockConfig();
+      live.tofError[0] = 0;
+      live.tofFailHead = 0xFF;
+      if (!tofHealthy) {
+        snprintf(live.tofError, sizeof live.tofError, "%s", tof.fail ? tof.fail : "begin");
+        live.tofFailHead = tof.failHead;
+      }
+      unlockConfig();
+      Serial.printf("ToF restart: %s\n", tofHealthy ? "ok" : "failed");
+    }
     lockConfig();
     const bool updating = live.updating;
     unlockConfig();
@@ -465,8 +582,14 @@ void serviceTask(void *arg) {
         line[used] = 0;
         if (used == 1 && (line[0] == 'f' || line[0] == 'e')) {
           sendRequest(line[0] == 'f' ? Command::CalibrateFloor : Command::CalibrateVoid);
+        } else if (used == 1 && line[0] == '1') {
+          sendRequest(Command::Start, 0, 0, Reason::SerialStart);
+        } else if (used == 1 && line[0] == '2') {
+          sendRequest(Command::Start, 1, 0, Reason::SerialStart);
+        } else if (used == 1 && line[0] == '3') {
+          sendRequest(Command::Start, 2, 0, Reason::SerialStart);
         } else if (used == 1 && line[0] == 'x') {
-          sendRequest(Command::Stop);
+          sendRequest(Command::Stop, 0, 0, Reason::SerialStop);
         } else if (used == 1 && line[0] == 'c') {
           sendRequest(Command::ClearFault);
         } else if (used == 1 && (line[0] == 'q' || line[0] == '?')) {
@@ -479,6 +602,10 @@ void serviceTask(void *arg) {
                         t.distance[0], t.distance[1], t.distance[2],
                         t.applied[0], t.applied[1],
                         (unsigned long)t.control_max_us, (unsigned long)t.deadline_misses);
+          Serial.println("1=senior A, 2=senior B, 3=single board, x=stop, "
+                         "c=clear fault, f=floor, e=void, q=status");
+        } else if (used == 1) {
+          Serial.println("unknown command; 1, 2, 3, x, c, f, e, q");
         }
         used = 0;
       } else if (used < sizeof(line) - 1) {
@@ -504,10 +631,7 @@ void bootVerification() {
   bool healthy = false;
   const uint32_t start = millis();
   while (millis() - start < BOOT_VERIFY_MS) {
-    bool fresh = tofHealthy;
-    for (uint8_t i = 0; i < 3; ++i) {
-      if (!tof.ranges[i].sampledMs || millis() - tof.ranges[i].sampledMs > RANGE_STALE_MS) fresh = false;
-    }
+    const bool fresh = tofHealthy && tof.fresh(millis());
     lockConfig();
     const bool webUp = live.webTicks > 0;   // web task has run
     unlockConfig();
@@ -531,13 +655,15 @@ void bootVerification() {
 
 void setup() {
   for (uint8_t i = 0; i < 2; ++i) {
+    // Park the PWM input at its resting level first: with an active-low
+    // driver, a low output would run the wheel.
     pinMode(PIN_PWM[i], OUTPUT);
-    digitalWrite(PIN_PWM[i], LOW);
+    digitalWrite(PIN_PWM[i], idlePwmLevel(i));
     pinMode(PIN_DIR[i], OUTPUT);
     digitalWrite(PIN_DIR[i], !FORWARD_LEVEL[i]);
   }
-  pinMode(PIN_BTN_START, INPUT);
-  pinMode(PIN_BTN_STOP, INPUT);
+  pinMode(PIN_SW2, INPUT);
+  pinMode(PIN_SW3, INPUT);
   for (uint8_t pin : PIN_LED) { pinMode(pin, OUTPUT); digitalWrite(pin, LOW); }
   for (uint8_t i = 0; i < 4; ++i) pinMode(PIN_QRE[i], INPUT);
   for (uint8_t i = 0; i < 2; ++i) pinMode(PIN_FG[i], INPUT);
@@ -549,16 +675,18 @@ void setup() {
 
   // Bench mode is a physical boot selection; the network cannot change it.
   lockConfig();
-  live.benchMode = digitalRead(PIN_BTN_STOP) == HIGH;
+  live.benchMode = digitalRead(PIN_SW2) == HIGH;
   unlockConfig();
-  if (live.benchMode) Serial.println("BENCH mode selected (BUTTON2 held at boot)");
+  if (live.benchMode) Serial.println("BENCH mode selected (SW2 held at boot)");
 
   nvs_flash_init();
+  loadTrimTable();
 
   psramOk = esp_psram_get_size() == PSRAM_EXPECTED_MB * 1024 * 1024;
   if (!psramOk) {
     faulted = true;
-    Serial.printf("PSRAM check failed (expected %u MB)\n", PSRAM_EXPECTED_MB);
+    Serial.printf("PSRAM check failed (expected %lu MB)\n",
+                  static_cast<unsigned long>(PSRAM_EXPECTED_MB));
   }
 
   lockConfig();
@@ -584,6 +712,13 @@ void setup() {
     Serial.println("PWM attach failed");
   }
   stopOutputs();
+  Serial.printf("Motors: %lu Hz, %u-bit, active-low=%d,%d, attached=%d,%d, "
+                "confirmed=%d calibrated=%d bench=%d sw2=%d sw3=%d\n",
+                static_cast<unsigned long>(PWM_HZ), PWM_RES_BITS,
+                PWM_ACTIVE_LOW[0], PWM_ACTIVE_LOW[1],
+                pwmAttached[0], pwmAttached[1], HARDWARE_CONFIRMED,
+                live.calibrated, live.benchMode,
+                digitalRead(PIN_SW2), digitalRead(PIN_SW3));
 
   Wire.begin(PIN_SDA, PIN_SCL);
   Wire.setClock(400000);

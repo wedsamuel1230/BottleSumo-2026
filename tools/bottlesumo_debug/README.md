@@ -55,7 +55,7 @@ password. Reconfiguring an old seven-field file adds blank STA fields while
 retaining every existing credential.
 
 Select `TransportMode::AP_UDP`, `ESP_NOW`, or `BOTH` in the robot's public
-`firmware/bottlesumo_idf/main/network_config.h` (`TELEMETRY_MODE`). There is no
+`firmware/archive/bottlesumo_idf/main/network_config.h` (`TELEMETRY_MODE`). There is no
 desktop transport-mode setting to change the robot. The robot keeps its AP while
 connecting to the optional router in AP+STA mode. The router's channel determines
 the active AP channel; the ESP-NOW receiver follows it by associating with the

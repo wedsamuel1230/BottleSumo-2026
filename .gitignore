@@ -58,6 +58,7 @@ pnpm-debug.log*
 !.env.example
 tools/bottlesumo_debug/wireless.local.json
 firmware/bottlesumo_idf/main/network.local.h
+firmware/*/wifi_local.h
 firmware/bottlesumo_idf/sdkconfig
 firmware/bottlesumo_idf/sdkconfig.receiver
 firmware/bottlesumo_idf/sdkconfig*.old
@@ -78,3 +79,4 @@ managed_components/
 # Local Loop Engine runtime state
 **/loop-state.json
 **/experiment-ledger.jsonl
+firmware/archive/**/wifi_local.h

@@ -1,0 +1,12 @@
+// Copy to wifi_local.h (gitignored) or generate it:
+//   ./scripts/make-wifi-header.sh --sketch bottlesumo_2026
+#pragma once
+
+#define WIFI_SSID     "your-2.4ghz-ssid"
+#define WIFI_PASSWORD "your-password"
+
+#define AP_SSID       "BottleSumo"
+#define AP_PASSWORD   "bottlesumo"
+
+#define OTA_HOSTNAME  "bottlesumo"
+#define OTA_PASSWORD  "change-me"

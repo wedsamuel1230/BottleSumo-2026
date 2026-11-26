@@ -2,7 +2,8 @@
 
 Arduino port of [`firmware/bottlesumo_idf`](../bottlesumo_idf) for the
 **ESP32-S3 DevKitC-1 N16R8** (16 MB quad flash, 8 MB octal PSRAM, 240 MHz dual
-core). Same pinout, same three-head VL53L0X schedule, same competition
+core). Same pinout, same three-head VL53L0X schedule when three heads are
+fitted (see [Fitted ToF heads](#fitted-tof-heads)), same competition
 strategy. Adds a configuration web UI, guided QRE self-calibration, runtime
 drive tuning and OTA with rollback.
 
@@ -11,6 +12,14 @@ Open `bottlesumo_arduino.ino` in the Arduino IDE, or build with PlatformIO
 still passes.
 
 ## 1. Arduino IDE board settings
+
+Simplest path: install the project board profile
+(`./scripts/install-arduino-board.sh`, see
+[`arduino/bottlesumo-n16r8/README.md`](../../arduino/bottlesumo-n16r8/README.md))
+and select **Tools > Board > BottleSumo 2026 (ESP32-S3 N16R8)**. Every value in
+the table below is then pinned, including the `default_16MB` OTA table.
+
+Or set the stock board by hand:
 
 `Tools` menu, exactly:
 
@@ -67,6 +76,19 @@ touches a motor. Motor ownership is single-writer: only `controlTask` calls
 `setWheel()`. Each task publishes its measured rate and remaining stack into
 `live`, and `GET /api/status` returns both, so a starved task is visible.
 
+### Fitted ToF heads
+
+`TOF_HEAD_COUNT` and `TOF_HEADS` in `config.h` list which of the three planned
+heads are actually wired. Only those XSHUT lines are driven and released, only
+those heads are probed, and the ranging schedule is built from them. The start
+gate and the OTA self-test require fresh data from the fitted heads only, so a
+bench robot with one module can start a round.
+
+A single module goes in the center slot: XSHUT **GPIO7**, address **0x31**.
+With no side heads the robot sees a target but not its bearing, so `Search` keeps
+the timed scan pattern instead of turning toward a side reading. Set the count
+back to 3 and list `{0, 1, 2}` for the competition build.
+
 ## 4. Wi-Fi and the web UI
 
 On boot the robot opens a WPA2 access point:
@@ -75,11 +97,22 @@ On boot the robot opens a WPA2 access point:
   (the password is stored in NVS, never compiled into an OTA image)
 - URL `http://bottlesumo/` or `http://192.168.4.1/`
 
-The page has: live QRE bars with threshold markers and edge flags, ToF
-distances, calibration controls, the per-channel manual threshold editor, the
-drive tuning sliders with a live summary of the opening, carry and edge
-settings, the state-machine history table, task rates and remaining stack,
-OTA, and a motor-test panel.
+The AP stays up even when the robot joins the house network (AP+STA). One
+radio serves both links, so the AP follows the station's channel as soon as the
+join succeeds: `channel=6` is only the pre-join default, and `/api/status`
+reports the live value as `channel`. The station credentials come from the
+gitignored `wifi_local.h`
+(`./scripts/make-wifi-header.sh --sketch bottlesumo_arduino`); a config saved
+in NVS overrides them. With the station link up the page also answers at
+`http://bottlesumo.local/` and at the DHCP address, which is how the bench
+drives it without leaving the LAN. Build the file once, reboot, and the robot
+joins on its own.
+
+The page has: three start buttons (Senior A, Senior B, single board), the live
+state pill, QRE bars with threshold markers and edge flags, ToF chips,
+calibration controls, the per-channel manual threshold editor, the drive tuning
+sliders with a live summary of the fixed opening, carry and edge settings, the
+state-machine history table, OTA, and a motor-test panel.
 
 ### Self-calibration
 
@@ -125,8 +158,8 @@ trackside.
 
 | Group | Fields |
 | --- | --- |
-| Opening | `openingEnabled`, `openingPwm`, `openingForwardMs`, `openingTurnMs`, `openingTurnDir`, `openingForward2Ms`, `openingAbortMm` |
-| Carry | `carryEnabled`, `carryAfterMs`, `carryPwm`, `carryBias`, `carrySweepMs`, `carryMaxMs` |
+| Opening | `openingEnabled`, `openingPwm`, `openingCommitMs`, `openingAbortMm` |
+| Carry | `carryEnabled`, `carryAfterMs`, `carryPwm`, `carryMaxMs` |
 | Edge | `edgeDebounceMs`, `maxEscapesPerRound` |
 
 Changes are accepted only while stopped, apply immediately, and persist in NVS.
@@ -155,29 +188,37 @@ codes the desktop telemetry tool already understands.
 - Drive levels live in `Tuning` and are runtime-editable; the defaults in the
   struct are only a starting point.
 
-### Opening run
+### Opening path
 
-The start box is fixed by the rules, so a short open-loop script beats
-searching. After the 1 s start delay the robot drives straight for
-`openingForwardMs`, pivots `openingTurnMs` in `openingTurnDir`, then drives
-straight for `openingForward2Ms`. On last year's table that sequence already
-arrived next to the bottle.
+The two senior arrangements put the bottle on a different joint line, so the
+firmware carries one fixed leg list per map (`commitPlan()` in
+`state_machine.h`). SW2 starts Senior A, SW3 starts Senior B, and the web UI or
+the Serial console (`1`, `2`, `3`) can also start a round; the map decides
+which list runs.
 
-Two guards keep the open loop honest. A centre ToF reading inside
-`openingAbortMm` (300 mm) ends the script early and hands over to normal
-approach, so it cannot drive past the bottle. A confirmed edge during the
-opening goes to `Escape` like any other state; the opening is not resumed
-afterwards.
+A leg is a duration plus a percentage of `openingPwm` for each wheel:
+
+| Map | Legs |
+| --- | --- |
+| Senior A | straight 1300 → right pivot 420 → straight 1700 → right arc 380 → straight 1200 |
+| Senior B | straight 1300 → right pivot 420 → straight 1600 → left arc 380 → straight 1200 |
+| Single board | straight 1400 → right pivot 400 → straight 2000 → left pivot 400 → straight 1100 |
+
+The path is not a search: every round of that map drives the same legs, so the
+outcome can be compared and re-timed. `openingCommitMs` (6 s) is a hard cap.
+Two guards keep it honest: a confirmed edge during the opening goes to `Escape`
+like any other state and is not resumed, and a centre ToF reading inside
+`openingAbortMm` (300 mm) hands over to the normal approach before the robot
+drives past the bottle.
 
 ### Carry
 
-Contact alone puts the bottle in front of the robot; the opponent can still
-line up a clean approach from the side. After `carryAfterMs` of contact, `Carry`
-runs both wheels forward at `carryPwm` with a differential that flips every
-`carrySweepMs`, so the robot arcs and drags the bottle sideways. The left and
-right ToF readings pull the arc back toward the bottle when it drifts off
-centre, which is what keeps contact through the sweep. It leaves after
-`carryMaxMs` and returns to `Push`, so it cannot circle forever.
+CTEA 2026 Rev.1 §4 judges a push intentional only while the marked front face
+keeps contact until the bottle leaves the table. A bottle that falls during a
+spin or a side contact is explicitly non-intentional, so `Carry` does not arc.
+After `carryAfterMs` of contact it holds both wheels forward at `carryPwm` and
+uses only `pushSteerMax` of differential to keep the bottle in front. It leaves
+after `carryMaxMs` and returns to `Push`.
 
 The 6 s push budget is measured from the first contact of an engagement, and
 survives the `Push` → `Carry` → `Push` cycle.
@@ -196,16 +237,33 @@ Four layers, in the order they act:
    as a blinking LED and a fault on the page rather than a robot that reverses
    for the rest of the round.
 
-`tests/arduino-state-machine-test.cpp` holds 120 assertions covering the
-transitions, the priority order, the opening script and its early abort, the
-carry arc and its sweep flip, the push budget across carry cycles, the escape
-budget, the debounce filter, manual thresholds and polarity, rollover safety,
-the history buffer, and that `powerScale` reaches the wheel commands.
+`tests/arduino-state-machine-test.cpp` holds the host assertions covering the
+transitions, the priority order, both senior commit paths, the early abort, the
+straight carry drag, the push budget across carry cycles, the escape budget,
+the debounce filter, manual thresholds and polarity, rollover safety, the
+history buffer, and that `powerScale` reaches the wheel commands.
 
 ## 6. OTA
 
-1. Connect to the `BottleSumo` AP.
-2. Press **開啟 60s 更新窗口** (or hold BUTTON2 for 2 s while stopped).
+**Arduino OTA (preferred).** The firmware runs the `ArduinoOTA` service on port
+3232 with the password from `wifi_local.h`, so a build can be pushed over the
+LAN without the update window:
+
+```bash
+arduino-cli compile -b esp32:esp32:bottlesumo_n16r8 --output-dir /tmp/bsbuild \
+  firmware/bottlesumo_arduino
+arduino-cli upload -p bottlesumo.local -b esp32:esp32:bottlesumo_n16r8 \
+  --input-dir /tmp/bsbuild --upload-field password=<password>
+```
+
+The first flash must still go over USB; every later one can use OTA.
+
+**Web upload.** Still available for a phone on the AP:
+
+1. Connect to the `BottleSumo` AP (its channel follows the router once the
+   station link is up).
+2. Press **開啟 60s 更新窗口**. The physical switches start rounds, so the
+   window has no button gesture; use this page or the console.
 3. Choose `bottlesumo_arduino.ino.bin` and press **上傳並重啟**.
 
 The upload is written to the inactive slot. On the next boot the firmware runs
@@ -213,7 +271,8 @@ a self-test (PSRAM size, fresh ToF data, web task alive); if it passes the image
 is confirmed, otherwise the bootloader rolls back to the previous slot.
 
 OTA is refused unless the robot is stopped. Motors are forced to zero before
-the write starts.
+the write starts. The Arduino OTA path sets the same `live.updating` flag, so
+the control task stops the outputs as soon as the upload begins.
 
 ## 7. Safety gates
 
@@ -221,8 +280,17 @@ the write starts.
   `true` only after you have verified wheel direction, QRE mapping and stopping
   distance on the bench, then rebuild.
 - `FORWARD_LEVEL` must be measured per motor.
-- Bench driving is only available when BUTTON2 is held during boot; the web
+- `PWM_ACTIVE_LOW` is `true` in this sketch because a bench report has duty 0
+  running the wheel at full speed; the firmware therefore writes `255 - duty`.
+  This attribution is **not yet confirmed**: drive the bench test and check
+  that duty 0 stops and duty 255 runs. If 255 stops, set the flag to `false`;
+  if both run, the PWM and DIR leads are crossed. The boot line
+  `Motors: ... active-low=1,1 ...` shows the active setting.
+- Bench driving is only available when SW2 is held during boot; the web
   sliders are ignored otherwise.
+- SW2 starts Senior A, SW3 starts Senior B. Either switch stops a running
+  round; a start fires on release, so the starting press is not read as a stop.
+  The Serial console starts with `1` (A), `2` (B) or `3` (single board).
 - FG pulses are diagnostic only (`FG_CONNECTED = false`).
 - Motors are disabled during calibration, during OTA, and while a fault is set.
 

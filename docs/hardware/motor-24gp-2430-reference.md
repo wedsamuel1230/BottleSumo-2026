@@ -68,9 +68,48 @@ model mounting holes.
 
 ## Source images
 
-The source images supplied for this note are kept beside it:
+The source images supplied for this note are kept beside it. The file named
+`wire-and-fg` actually contains the dimension drawing; the supplied set has no
+wire-colour table, and the listing text states only the function of each line
+(PWM low = full speed, DIR tied to the black wire = reverse).
 
-- [Motor wiring and FG description](../images/motor/motor-24gp-2430-wire-and-fg.png)
-- [FG pulse-count note](../images/motor/motor-24gp-2430-fg-pulse-description.png)
+- [Motor wiring text and FG description](../images/motor/motor-24gp-2430-fg-pulse-description.png)
 - [Motor dimensions](../images/motor/motor-24gp-2430-dimensions.png)
+  (also stored, mislabelled, as `motor-24gp-2430-wire-and-fg.png`)
 - [64:1 performance table](../images/motor/motor-24gp-2430-64-to-1-specification.png)
+
+## Harness colours on the bench
+
+The final v2 harness maps the motor loom to the controller as follows, on both
+X1 and X2:
+
+| Motor line | Wire | GPIO |
+| --- | --- | --- |
+| FG output | white | 9 / 12 (inputs) |
+| PWM input | yellow | 10 / 13 |
+| DIR input | orange | 11 / 14 |
+
+GPIO9/12 stay inputs; the firmware never drives them. Treat the colour order as
+bench data, not a datasheet fact: check continuity if a connector is re-crimped.
+
+The four FG resistors are marked **103** on the board (bench report; the
+schematic stores no value for R4–R7), i.e. R4/R5 = 10 kΩ in series and
+R6/R7 = 10 kΩ to ground. That is a 2:1 divider, and it is wrong for both logic
+levels:
+
+| FG output high | At GPIO9/12 | ESP32-S3 verdict |
+| --- | ---: | --- |
+| 5 V push-pull, measured 2.58 V | 2.58 V | marginal: 105 mV over VIH 2.475 V |
+| 3.3 V push-pull | 1.65 V | invalid, inside the forbidden band |
+| 5 V open-collector + pull-up | 2.5 V | marginal, and R6/R7 fight the pull-up |
+
+A mid-rail input explains the noise: GPIO12 jumped between 0.4 ms and 285 ms
+periods while driving. Fix the divider before trusting the count:
+
+- 5 V push-pull: R6/R7 = 15 kΩ to 16 kΩ (3.0–3.2 V at the pin). 16 kΩ gives
+  3.18 V for a 5.16 V source, which is the 2.58 V reading scaled back up.
+- 3.3 V push-pull: remove R6/R7.
+- Open-collector: remove R6/R7 and fit a 4.7 kΩ pull-up to 3V3.
+
+Do not enable the ESP32 internal pull-up: 45 kΩ against 10 kΩ still sits near
+0.6 V.

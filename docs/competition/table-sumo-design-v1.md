@@ -330,6 +330,13 @@ timeslot and accept the slower update rate.
 
 ### 2.3 ESP32-S3 pin budget
 
+> **Superseded as a wiring map.** This is the original bare-board proposal.
+> The assembled v2 board was confirmed on 2026-11-22 with the ToF face up:
+> QRE (IR) `GP4` top-left, `GP1` top-right, `GP5` bottom-left, `GP2`
+> bottom-right, i.e. `PIN_QRE = {4, 1, 5, 2}`. Wire from the
+> [active pinout](../hardware/esp32-s3-devkitc-1-n16r8-pinout.md), not from this
+> table.
+
 | GPIO | Proposed use | Direction/type | Decision and warning |
 |---:|---|---|---|
 | 1 | Left PWM | output | Existing movement firmware contract; also ADC1-capable but not used as analog |

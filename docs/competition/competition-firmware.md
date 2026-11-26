@@ -1,15 +1,19 @@
 # BottleSumo competition firmware
 
-Active development has moved to [ESP-IDF/PlatformIO on N16R8](esp-idf-wireless.md).
-This page preserves the earlier Arduino delivery. The shared search strategy
-now uses 320ms turn / 180ms observe / 300ms advance / 200ms observe.
+The current bench firmware is the [Arduino + FreeRTOS rewrite](../../firmware/bottlesumo_2026/README.md):
+one 5 ms control task, ArduinoOTA, IR calibration and an `enum class State`
+machine. The ESP-IDF path stays documented in
+[ESP-IDF/PlatformIO on N16R8](esp-idf-wireless.md). This page preserves the
+earlier Arduino delivery. The shared search strategy now uses 320ms turn /
+180ms observe / 300ms advance / 200ms observe.
 
 ## Scope and implementation plan
 
 The requested deliverable is autonomous senior-division firmware for the existing
 v2 controller, plus a practical strategy and commissioning instructions. The
-user confirmed QRE order: front-left, front-right, rear-left, rear-right on
-GPIO1/2/4/5; motor 1 is left. Three VL53L0X heads use XSHUT GPIO6/7/15,
+user confirmed QRE corners: GP1 top-right, GP2 bottom-right, GP4 top-left,
+GP5 bottom-left (top view with the ToF face up), i.e. front-left, front-right,
+rear-left, rear-right on GPIO4/1/5/2; motor 1 is left. Three VL53L0X heads use XSHUT GPIO6/7/15,
 approved by the user, on the existing SDA17/SCL16 bus. Preserve the electrical
 test and unrelated CAD changes. No upload, powered test, push, or merge is part
 of this delivery.
@@ -99,7 +103,7 @@ Pololu 初始化由 library 執行；運行時的單次啟動取自固定的 1.3
 
 | 功能 | GPIO／地址 |
 | --- | --- |
-| QRE 左前／右前／左後／右後 | 1／2／4／5 |
+| QRE 左上／右上／左下／右下（GP4／GP1／GP5／GP2） | 4／1／5／2 |
 | 左馬達 FG／PWM／DIR | 9／10／11 |
 | 右馬達 FG／PWM／DIR | 12／13／14 |
 | I2C SDA／SCL | 17／16 |
@@ -107,6 +111,10 @@ Pololu 初始化由 library 執行；運行時的單次啟動取自固定的 1.3
 | ToF 左／中／右地址 | 0x30／0x31／0x32；每次上電重新分配 |
 | 狀態 LED（兩顆一起驅動） | 48、47；HIGH 亮 |
 | BUTTON1／BUTTON2 | 41／42；HIGH 表示按下，保留外部下拉 |
+
+QRE 四角以俯視圖定名，ToF 推板那一邊為「上」：**GP4 左上、GP1 右上、GP5 左下、GP2 右下**，
+即前左／前右／後左／後右；程式 `PIN_QRE = {4, 1, 5, 2}` 的索引 0／1 為前對、2／3 為後對、
+0／2 為左側。換言之車頭朝上時右邊是 GP1／GP2，左邊是 GP4／GP5。
 
 三顆 ToF 共用 SDA/SCL；**拆除 XSHUT 固定接 3V3 的接法**，按確認的
 GPIO6/7/15 分開控制。XSHUT 拉低時關閉，啟用時改為 INPUT，使用模組
