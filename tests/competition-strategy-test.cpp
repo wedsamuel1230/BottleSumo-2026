@@ -1,6 +1,6 @@
 #include <assert.h>
 #include <stdio.h>
-#include "../firmware/bottlesumo_competition/strategy.h"
+#include "../firmware/archive/bottlesumo_competition/strategy.h"
 using namespace BottleSumo;
 
 void fresh(Range (&r)[3], uint32_t now, uint16_t left = 0,

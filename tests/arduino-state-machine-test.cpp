@@ -1,6 +1,6 @@
 // Host assertions for the Arduino state machine. Pure logic, no hardware.
 // Build:
-//   c++ -std=c++17 -Wall -Wextra -Werror -Ifirmware/bottlesumo_arduino <this file> -o /tmp/bs-sm-test
+//   c++ -std=c++17 -Wall -Wextra -Werror -Ifirmware/archive/bottlesumo_arduino <this file> -o /tmp/bs-sm-test
 //   /tmp/bs-sm-test
 #include <assert.h>
 #include <stdio.h>

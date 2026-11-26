@@ -1,7 +1,7 @@
 #include <assert.h>
 #include <stdio.h>
 #ifndef ADAPTER_SKETCH
-#define ADAPTER_SKETCH "../firmware/bottlesumo_competition/bottlesumo_competition.ino"
+#define ADAPTER_SKETCH "../firmware/archive/bottlesumo_competition/bottlesumo_competition.ino"
 #endif
 #include ADAPTER_SKETCH
 

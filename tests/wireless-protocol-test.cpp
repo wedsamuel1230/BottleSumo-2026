@@ -1,4 +1,4 @@
-#include "../firmware/bottlesumo_idf/main/protocol.h"
+#include "../firmware/archive/bottlesumo_idf/main/protocol.h"
 #include <cassert>
 #include <cstdio>
 #include <string>
