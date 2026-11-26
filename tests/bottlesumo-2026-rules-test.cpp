@@ -1,5 +1,5 @@
 // Host assertions for the 2026 IR rules: calibration polarity, hysteresis,
-// debounce, the 3+ channel failure rule and the 2025 escape table.
+// debounce, the 3+ stop rule and the operator's edge reaction table.
 //
 // Build:
 //   c++ -std=c++17 -Wall -Wextra -Werror -Ifirmware/bottlesumo_2026 \
@@ -27,32 +27,47 @@ static void capture(Calibration &cal, bool floor, uint16_t value) {
 }
 
 static void testEscapeTable() {
-  check(edgeFails(0b0111), "three bits fail");
-  check(edgeFails(0b1111), "four bits fail");
-  check(!edgeFails(0b0011), "two bits do not fail");
+  check(edgeFails(0b0111), "three bits stop");
+  check(edgeFails(0b1111), "four bits stop");
+  check(!edgeFails(0b0011), "front pair does not stop");
+
+  const Reaction clear = reactionFor(0b0000);
+  check(clear.left == EDGE_FORWARD && clear.right == EDGE_FORWARD, "all clear forward 70");
 
   const Reaction front = reactionFor(0b0011); // FL + FR
-  check(front.left == -ESCAPE_SPEED && front.right == -ESCAPE_SPEED, "front pair backs off");
+  check(front.left == -EDGE_BACKWARD && front.right == -EDGE_BACKWARD, "front pair backs off");
 
   const Reaction rear = reactionFor(0b1100); // RL + RR
-  check(rear.left == ESCAPE_SPEED && rear.right == ESCAPE_SPEED, "rear pair drives on");
+  check(rear.left == EDGE_FORWARD && rear.right == EDGE_FORWARD, "rear pair drives on");
 
   const Reaction fl = reactionFor(0b0001);
-  check(fl.left == ESCAPE_SPEED && fl.right == -ESCAPE_SPEED, "front-left turns right");
+  check(fl.left == EDGE_TURN_30 && fl.right == -EDGE_TURN_30, "FL turns right 30");
 
   const Reaction fr = reactionFor(0b0010);
-  check(fr.left == -ESCAPE_SPEED && fr.right == ESCAPE_SPEED, "front-right turns left");
-
-  const Reaction left = reactionFor(0b0101); // FL + RL
-  check(left.left == ESCAPE_SPEED && left.right == -ESCAPE_SPEED, "left side turns right");
-
-  const Reaction right = reactionFor(0b1010); // FR + RR
-  check(right.left == -ESCAPE_SPEED && right.right == ESCAPE_SPEED, "right side turns left");
+  check(fr.left == -EDGE_TURN_30 && fr.right == EDGE_TURN_30, "FR turns left 30");
 
   const Reaction rl = reactionFor(0b0100);
+  check(rl.left == EDGE_TURN_30 && rl.right == -EDGE_TURN_30, "RL (A0) turns right 30");
+
   const Reaction rr = reactionFor(0b1000);
-  check(rl.left == ESCAPE_SPEED && rl.right == ESCAPE_SPEED, "rear-left drives on");
-  check(rr.left == ESCAPE_SPEED && rr.right == ESCAPE_SPEED, "rear-right drives on");
+  check(rr.left == -EDGE_TURN_30 && rr.right == EDGE_TURN_30, "RR (A3) turns left 30");
+
+  const Reaction left = reactionFor(0b0101); // FL + RL
+  check(left.left == EDGE_TURN_50 && left.right == -EDGE_TURN_50, "left side turns right 50");
+
+  const Reaction right = reactionFor(0b1010); // FR + RR
+  check(right.left == -EDGE_TURN_50 && right.right == EDGE_TURN_50, "right side turns left 50");
+
+  const Reaction diagA = reactionFor(0b0110); // RL + FR = A0 + A2
+  check(diagA.left == EDGE_SLIGHT_FAST && diagA.right == EDGE_SLIGHT_SLOW,
+        "A0+A2 slight right 40");
+
+  const Reaction diagB = reactionFor(0b1001); // FL + RR = A1 + A3
+  check(diagB.left == EDGE_SLIGHT_SLOW && diagB.right == EDGE_SLIGHT_FAST,
+        "A1+A3 slight left 40");
+
+  const Reaction stop = reactionFor(0b0111);
+  check(stop.left == 0 && stop.right == 0, "3+ reaction is stop");
 }
 
 static void testCalibrationHighPolarity() {
@@ -112,6 +127,17 @@ static void testManualOverride() {
   check(!cal.edgeIsHigh(2), "manual polarity low");
   cal.clearManual(2);
   check(!cal.manual(2), "manual flag cleared");
+
+  Calibration captured;
+  captured.reset();
+  captured.resetCapture(true);
+  captured.resetCapture(false);
+  for (uint16_t v = 800; v <= 900; v += 20) capture(captured, true, v);
+  for (uint16_t v = 3000; v <= 3200; v += 40) capture(captured, false, v);
+  captured.setManual(0, 80, true);
+  check(captured.threshold(0) == 80, "manual value hides the auto threshold");
+  check(captured.autoThreshold(0) > 900 && captured.autoThreshold(0) < 3000,
+        "auto threshold stays visible under manual override");
 }
 
 static void testDebounce() {

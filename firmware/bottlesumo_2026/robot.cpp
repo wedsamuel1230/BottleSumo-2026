@@ -17,6 +17,21 @@ struct Wheel {
 
 Wheel wheels[2];
 
+// Forward odometry. The motors have no usable encoder in this firmware, so
+// this is commanded forward time weighted by duty. It is a repeatable tuning
+// number, not a measured distance; FORWARD_MM_PER_S converts it.
+portMUX_TYPE forwardMux = portMUX_INITIALIZER_UNLOCKED;
+uint32_t forwardDutyMs = 0; // milliseconds x percent
+uint32_t forwardLastAt = 0;
+uint8_t forwardDuty = 0;
+bool forwardActive = false;
+
+void closeForward(uint32_t now) {
+  if (!forwardActive) return;
+  forwardDutyMs += (now - forwardLastAt) * forwardDuty;
+  forwardActive = false;
+}
+
 constexpr uint16_t idleDuty() { return (1u << PWM_BITS) - 1; }
 
 uint16_t driverDuty(uint8_t pct) {
@@ -135,6 +150,9 @@ void robotBegin() {
 }
 
 void robotStop() {
+  portENTER_CRITICAL(&forwardMux);
+  closeForward(millis());
+  portEXIT_CRITICAL(&forwardMux);
   for (uint8_t i = 0; i < 2; ++i) {
     writeWheel(i, 0);
     wheels[i].duty = 0;
@@ -142,8 +160,38 @@ void robotStop() {
 }
 
 void motorCommand(int8_t left, int8_t right, uint32_t now) {
+  portENTER_CRITICAL(&forwardMux);
+  closeForward(now);
+  const bool forward = left > 0 && right > 0;
+  forwardActive = forward;
+  forwardDuty = forward ? uint8_t(left < right ? left : right) : 0;
+  forwardLastAt = now;
+  portEXIT_CRITICAL(&forwardMux);
   applyWheel(0, left, now);
   applyWheel(1, right, now);
+}
+
+uint32_t robotForwardMs() {
+  portENTER_CRITICAL(&forwardMux);
+  const uint32_t value = forwardDutyMs / 100u;
+  portEXIT_CRITICAL(&forwardMux);
+  return value;
+}
+
+uint32_t robotForwardCm() {
+  portENTER_CRITICAL(&forwardMux);
+  const uint32_t ms = forwardDutyMs / 100u;
+  portEXIT_CRITICAL(&forwardMux);
+  return uint32_t((uint64_t(ms) * FORWARD_MM_PER_S) / 10000u);
+}
+
+void robotResetForward() {
+  portENTER_CRITICAL(&forwardMux);
+  forwardDutyMs = 0;
+  forwardActive = false;
+  forwardDuty = 0;
+  forwardLastAt = millis();
+  portEXIT_CRITICAL(&forwardMux);
 }
 
 void irRead(uint16_t out[4]) {

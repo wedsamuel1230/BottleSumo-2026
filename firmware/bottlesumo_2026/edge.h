@@ -88,15 +88,24 @@ struct Calibration {
     return true;
   }
 
+  bool autoEdgeIsHigh(uint8_t i) const { return edgeMin[i] > floorMax[i]; }
+
   bool edgeIsHigh(uint8_t i) const {
     if (manual(i)) return ((manualHigh >> i) & 1) != 0;
-    return edgeMin[i] > floorMax[i];
+    return autoEdgeIsHigh(i);
+  }
+
+  // The captured midpoint, independent of a manual override. Zero when the
+  // channel was never captured; the web page shows it next to the manual value
+  // so an override can be checked against the real clusters.
+  uint16_t autoThreshold(uint8_t i) const {
+    return autoEdgeIsHigh(i) ? uint16_t((int(edgeMin[i]) + int(floorMax[i])) / 2)
+                             : uint16_t((int(floorMin[i]) + int(edgeMax[i])) / 2);
   }
 
   uint16_t threshold(uint8_t i) const {
     if (manual(i)) return manualValue[i];
-    return edgeIsHigh(i) ? uint16_t((int(edgeMin[i]) + int(floorMax[i])) / 2)
-                         : uint16_t((int(floorMin[i]) + int(edgeMax[i])) / 2);
+    return autoThreshold(i);
   }
 
   // Hysteresis keyed on the previous confirmed bit, not the raw sample.

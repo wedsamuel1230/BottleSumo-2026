@@ -44,7 +44,8 @@ h2{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--mute
 button{font:inherit;border:1px solid var(--line);background:#1d222c;color:var(--ink);padding:7px 10px;border-radius:7px;cursor:pointer}
 button.on{background:#233a2e;border-color:#2f5c45;color:var(--ok)}button.stop{background:#3a2323;border-color:#5c2f2f;color:var(--err)}
 button:active{transform:translateY(1px)}.grid2{display:grid;grid-template-columns:1fr 1fr;gap:8px}.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
-input,select{font:inherit;background:#0d1016;color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:5px;width:100%}
+input,select,textarea{font:inherit;background:#0d1016;color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:5px;width:100%}
+textarea{min-height:88px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;resize:vertical}
 .hint{color:var(--muted);font-size:12px;margin:6px 0 0}table{width:100%;border-collapse:collapse}td,th{text-align:left;padding:3px 0;font-size:13px}
 th{color:var(--muted);font-weight:500}.edge{display:inline-block;padding:2px 7px;border-radius:999px;border:1px solid var(--line);color:var(--muted);margin:0 4px 4px 0;font-size:12px}
 .edge.hit{background:#3a2323;border-color:#5c2f2f;color:var(--err)}
@@ -54,7 +55,8 @@ th{color:var(--muted);font-weight:500}.edge{display:inline-block;padding:2px 7px
 <main>
 <section><h2>Sensor</h2><div id="ir"></div><div class="row"><span>ToF</span><b id="tof">--</b></div>
 <div class="row"><span>Edge bits</span><span id="edges"></span></div>
-<p class="hint">IR 數值 0–4095。紅色代表已確認出界。</p></section>
+<div class="row"><span>前進</span><b id="fwd">--</b></div>
+<p class="hint">IR 數值 0–4095。紅色代表已確認出界。bit3..0 = RR RL FR FL；A0=RL、A1=FL、A2=FR、A3=RR。前進 cm 為 100% 等效估算。</p></section>
 <section><h2>控制</h2><div class="grid2">
 <button onclick="cmd('/api/start?a=1')">Start A</button><button onclick="cmd('/api/start?a=2')">Start B</button>
 <button class="stop" onclick="cmd('/api/stop')">Stop</button><button id="dbg" onclick="toggleDebug()">Debug</button></div>
@@ -63,10 +65,16 @@ th{color:var(--muted);font-weight:500}.edge{display:inline-block;padding:2px 7px
 <button onclick="cmd('/api/calibrate?mode=void')">Cal void</button></div>
 <p class="hint">3 秒。校準期間摩打停。</p></section>
 <section><h2>Debug 遙控</h2><div class="grid3">
-<button data-l="60" data-r="60">前</button><button data-l="0" data-r="0">停</button><button data-l="-60" data-r="-60">後</button>
-<button data-l="-60" data-r="60">左轉</button><button></button><button data-l="60" data-r="-60">右轉</button></div>
-<p class="hint">按實先會行；放手或 500 ms 無指令自動停。先將車放上支架。</p></section>
-<section><h2>Threshold</h2><div id="thr"></div><p class="hint">未校準或想手動覆寫時使用；極性要同實物一致。</p></section>
+<button data-l="100" data-r="100">前</button><button data-l="0" data-r="0">停</button><button data-l="-100" data-r="-100">後</button>
+<button data-l="-100" data-r="100">左轉</button><button data-l="100" data-r="-100">右轉</button></div>
+<p class="hint">前後左右全部 100%。按實先會行；放手或 500 ms 無指令自動停。先將車放上支架。</p></section>
+<section><h2>Threshold</h2><div id="thr"></div><p class="hint">電壓低於閾值 = bit 1（出界）。先看 Auto 的極性，再決定手動值；閾值要落在地板與落差兩個讀數之間。</p></section>
+<section><h2>Route A / B</h2><div class="grid2">
+<div><b>A</b><textarea id="ra" rows="4" spellcheck="false"></textarea>
+<div class="grid2"><button onclick="saveRoute('A')">Save A</button><button onclick="resetRoute('A')">Default A</button></div></div>
+<div><b>B</b><textarea id="rb" rows="4" spellcheck="false"></textarea>
+<div class="grid2"><button onclick="saveRoute('B')">Save B</button><button onclick="resetRoute('B')">Default B</button></div></div>
+</div><p class="hint">每行 left,right,ms。duty -100..100，時間 10..10000 ms。第一段固定 100/100 全速前進，只改時間；之後的段用 left/right。只可在 Idle / Debug / RoundEnd 儲存。</p></section>
 <section><h2>OTA</h2><form id="ota"><input type="file" name="firmware" accept=".bin">
 <button type="submit">上載 firmware.bin</button></form><p class="hint" id="otamsg">只可在 Idle 狀態更新。首次要用 USB。</p></section>
 <section><h2>Timing</h2><table><tr><th>task</th><th>max</th><th>miss</th></tr>
@@ -81,7 +89,7 @@ function el(t,c){const e=document.createElement(t);if(c)e.className=c;return e}
 document.getElementById('ir').innerHTML=CH.map((n,i)=>`<div class="ch"><div class="row"><span>${n}</span><b id="irv${i}" class="mono">--</b></div><div class="bar" id="irb${i}"><i></i></div></div>`).join('');
 document.getElementById('thr').innerHTML=CH.map((n,i)=>`<div class="ch"><div class="row"><span>${n}</span><span id="thv${i}" class="mono">--</span></div>
 <div class="grid3"><input id="thi${i}" type="number" min="0" max="4095" placeholder="value">
-<select id="thp${i}"><option value="1">high</option><option value="0">low</option></select>
+<select id="thp${i}"><option value="0">低於閾值 (bit=1)</option><option value="1">高於閾值 (bit=1)</option></select>
 <button onclick="setThr(${i})">Set</button></div>
 <button onclick="cmd('/api/threshold/clear?ch=${i}')">Auto</button></div>`).join('');
 function setThr(i){const v=document.getElementById('thi'+i).value;const h=document.getElementById('thp'+i).value;
@@ -104,20 +112,43 @@ async function poll(){try{const s=await(await fetch('/api/status')).json();
  document.getElementById('event').textContent=s.event||'';
  document.getElementById('tof').textContent=s.tofFresh?(s.tof+' mm'):'--';
  document.getElementById('tofstate').textContent=s.tofOk?'ToF ok':'ToF fail';
- document.getElementById('edges').textContent='0b'+s.edges.toString(2).padStart(4,'0');
+ document.getElementById('fwd').textContent=(s.fwdMs/1000).toFixed(1)+' s · '+s.fwdCm+' cm';
  document.getElementById('net').textContent=(s.ip||'AP')+(s.rssi?(' · '+s.rssi+' dBm'):'');
  const bits=s.edges;document.getElementById('edges').innerHTML=CH.map((n,i)=>
   `<span class="edge ${bits>>i&1?'hit':''}">${n}</span>`).join('');
  CH.forEach((n,i)=>{const v=s.ir[i];document.getElementById('irv'+i).textContent=v;
   const b=document.getElementById('irb'+i);b.firstChild.style.width=(v/4095*100)+'%';
   b.classList.toggle('hot',!!(bits>>i&1));
-  document.getElementById('thv'+i).textContent=s.thr[i]?s.thr[i]:'--';});
+  const man=(s.man>>i)&1,hi=(s.manHigh>>i)&1;
+  const auto=s.thrAuto[i]?(' | auto '+s.thrAuto[i]):'';
+  document.getElementById('thv'+i).textContent=(s.thr[i]?s.thr[i]:'--')+(man?(hi?' high':' low'):' auto')+auto;});
  document.getElementById('calprog').textContent=s.calProg>=0?('校準中 '+s.calProg+'%'):(s.calibrated?'已校準':'未校準（只警告）');
  debug=s.state=='debug';document.getElementById('dbg').classList.toggle('on',debug);
  document.getElementById('cus').textContent=s.ctrlUs+' µs';document.getElementById('cmiss').textContent=s.ctrlMiss;
  document.getElementById('tus').textContent=s.tofUs+' µs';document.getElementById('tmiss').textContent=s.tofMiss;
  document.getElementById('nus').textContent=s.netUs+' µs';document.getElementById('nmiss').textContent=s.netMiss;
 }catch(e){document.getElementById('state').textContent='offline'}}
+function routeText(list){return (list||[]).map(s=>s.l+','+s.r+','+s.ms).join('\n')}
+async function loadRoute(){try{const r=await(await fetch('/api/route')).json();
+ document.getElementById('ra').value=routeText(r.A);
+ document.getElementById('rb').value=routeText(r.B);}catch(e){}}
+async function saveRoute(d){const ta=document.getElementById('r'+d.toLowerCase());
+ const rows=ta.value.split('\n').map(s=>s.trim()).filter(Boolean);
+ if(!rows.length){alert('至少一段');return}
+ const q=new URLSearchParams({div:d,count:rows.length});
+ for(let i=0;i<rows.length;i++){const p=rows[i].split(',').map(Number);
+  if(p.length!==3||p.some(x=>!Number.isInteger(x))){alert('格式：left,right,ms（整數）');return}
+  q.set('l'+i,p[0]);q.set('r'+i,p[1]);q.set('ms'+i,p[2]);}
+ const res=await fetch('/api/route?'+q,{method:'POST'});
+ if(!res.ok){alert('儲存失敗：'+await res.text());return}
+ await new Promise(r=>setTimeout(r,150));
+ await loadRoute();}
+async function resetRoute(d){if(!confirm('重設 Route '+d+'？'))return;
+ const res=await fetch('/api/route/reset?div='+d,{method:'POST'});
+ if(!res.ok){alert('重設失敗：'+await res.text());return}
+ await new Promise(r=>setTimeout(r,150));
+ await loadRoute();}
+loadRoute();
 setInterval(poll,400);poll();
 </script></body></html>)PAGE";
 
@@ -140,7 +171,12 @@ void handleStatus() {
   j += "],\"thr\":[";
   j += String(s.threshold[0]) + "," + String(s.threshold[1]) + "," +
        String(s.threshold[2]) + "," + String(s.threshold[3]);
-  j += "],\"tof\":" + String(s.tofMm);
+  j += "],\"thrAuto\":[";
+  j += String(s.autoThreshold[0]) + "," + String(s.autoThreshold[1]) + "," +
+       String(s.autoThreshold[2]) + "," + String(s.autoThreshold[3]);
+  j += "],\"man\":" + String(s.manualMask) + ",\"manHigh\":" + String(s.manualHigh);
+  j += ",\"fwdMs\":" + String(s.forwardMs) + ",\"fwdCm\":" + String(s.forwardCm);
+  j += ",\"tof\":" + String(s.tofMm);
   j += ",\"tofFresh\":" + String(s.tofFresh ? 1 : 0);
   j += ",\"tofOk\":" + String(s.tofOk ? 1 : 0);
   j += ",\"calibrated\":" + String(s.calibrated ? 1 : 0);
@@ -202,15 +238,22 @@ void handleCalibrate() {
 void handleThreshold() {
   const long ch = server.arg("ch").toInt();
   const long value = server.arg("value").toInt();
+  const String high = server.arg("high");
   if (ch < 0 || ch > 3 || value < 1 || value > 4094) {
     server.send(400, "application/json", "{\"ok\":0,\"error\":\"range\"}");
+    return;
+  }
+  // No silent default: the polarity is the difference between "table" and
+  // "void". A missing argument used to become "high" and latch false edges.
+  if (high != "0" && high != "1") {
+    server.send(400, "application/json", "{\"ok\":0,\"error\":\"polarity\"}");
     return;
   }
   Command c;
   c.kind = CommandKind::Manual;
   c.channel = uint8_t(ch);
   c.value = uint16_t(value);
-  c.high = server.arg("high") != "0";
+  c.high = high == "1";
   post(c);
   sendJson("{\"ok\":1}");
 }
@@ -224,6 +267,78 @@ void handleThresholdClear() {
   Command c;
   c.kind = CommandKind::ClearManual;
   c.channel = uint8_t(ch);
+  post(c);
+  sendJson("{\"ok\":1}");
+}
+
+bool routeEditable(const Snapshot &s) {
+  return s.state == State::Idle || s.state == State::Debug ||
+         s.state == State::RoundEnd || s.state == State::Init;
+}
+
+void handleRouteGet() {
+  const Snapshot s = controlSnapshot();
+  String j = "{";
+  for (uint8_t d = 0; d < 2; ++d) {
+    if (d) j += ",";
+    j += d == 0 ? "\"A\":[" : "\"B\":[";
+    const RouteConfig &r = s.routes[d];
+    for (uint8_t i = 0; i < r.count; ++i) {
+      if (i) j += ",";
+      j += "{\"l\":" + String(int(r.seg[i].left));
+      j += ",\"r\":" + String(int(r.seg[i].right));
+      j += ",\"ms\":" + String(r.seg[i].ms) + "}";
+    }
+    j += "]";
+  }
+  j += "}";
+  sendJson(j);
+}
+
+void handleRouteSet() {
+  const Snapshot s = controlSnapshot();
+  if (!routeEditable(s)) {
+    server.send(409, "application/json", "{\"ok\":0,\"error\":\"state\"}");
+    return;
+  }
+  const String div = server.arg("div");
+  const long count = server.arg("count").toInt();
+  if ((div != "A" && div != "B") || count < 1 || count > ROUTE_MAX_SEGMENTS) {
+    server.send(400, "application/json", "{\"ok\":0,\"error\":\"range\"}");
+    return;
+  }
+  Command c{};
+  c.kind = CommandKind::RouteSet;
+  c.routeDiv = div == "B" ? 1 : 0;
+  c.route.count = uint8_t(count);
+  for (long i = 0; i < count; ++i) {
+    const long l = server.arg(String("l") + String(i)).toInt();
+    const long r = server.arg(String("r") + String(i)).toInt();
+    const long ms = server.arg(String("ms") + String(i)).toInt();
+    if (l < -100 || l > 100 || r < -100 || r > 100 || ms < 10 || ms > 10000) {
+      server.send(400, "application/json", "{\"ok\":0,\"error\":\"segment\"}");
+      return;
+    }
+    c.route.seg[i] = {int8_t(l), int8_t(r), uint16_t(ms)};
+  }
+  post(c);
+  sendJson("{\"ok\":1}");
+}
+
+void handleRouteReset() {
+  const Snapshot s = controlSnapshot();
+  if (!routeEditable(s)) {
+    server.send(409, "application/json", "{\"ok\":0,\"error\":\"state\"}");
+    return;
+  }
+  const String div = server.arg("div");
+  if (div != "A" && div != "B") {
+    server.send(400, "application/json", "{\"ok\":0,\"error\":\"division\"}");
+    return;
+  }
+  Command c{};
+  c.kind = CommandKind::RouteReset;
+  c.routeDiv = div == "B" ? 1 : 0;
   post(c);
   sendJson("{\"ok\":1}");
 }
@@ -315,6 +430,9 @@ void netBegin() {
   server.on("/api/calibrate", HTTP_POST, handleCalibrate);
   server.on("/api/threshold", HTTP_POST, handleThreshold);
   server.on("/api/threshold/clear", HTTP_POST, handleThresholdClear);
+  server.on("/api/route", HTTP_GET, handleRouteGet);
+  server.on("/api/route", HTTP_POST, handleRouteSet);
+  server.on("/api/route/reset", HTTP_POST, handleRouteReset);
   server.on("/api/update", HTTP_POST, uploadDone, uploadHandler);
   server.begin();
   Serial.println("web ready");

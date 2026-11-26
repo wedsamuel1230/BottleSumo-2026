@@ -1,9 +1,11 @@
 # PlatformIO firmware management
 
-PlatformIO is the single firmware build system for the active Arduino robot,
-the bench sketch, and the two native ESP-IDF environments. The sources stay in
-their current folders; no sketch copies are maintained. `firmware/archive/**`
-holds retired programs and is not built.
+PlatformIO is the repository CI and pre-commit compile gate for the Arduino
+robot, the bench sketch, and the two native ESP-IDF environments. The user
+builds and flashes the Arduino sketches with the **Arduino IDE** on the
+`BottleSumo 2026 (ESP32-S3 N16R8)` board; PlatformIO is not the local flash
+path. The sources stay in their current folders; no sketch copies are
+maintained. `firmware/archive/**` holds retired programs and is not built.
 
 ## Project layout
 

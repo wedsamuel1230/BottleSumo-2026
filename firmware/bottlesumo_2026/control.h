@@ -15,7 +15,6 @@ enum class State : uint8_t {
   Attack,
   Escape,
   Hold,
-  Failed,
   RoundEnd,
 };
 
@@ -34,6 +33,12 @@ struct Snapshot {
   uint8_t edges = 0;
   uint16_t ir[4] = {};
   uint16_t threshold[4] = {};
+  uint16_t autoThreshold[4] = {};
+  uint8_t manualMask = 0;
+  uint8_t manualHigh = 0;
+  RouteConfig routes[2] = {};
+  uint32_t forwardMs = 0; // 100 %-equivalent forward time this round
+  uint32_t forwardCm = 0; // estimate, FORWARD_MM_PER_S
   uint16_t tofMm = 0;
   bool tofFresh = false;
   bool calibrated = false;
@@ -56,6 +61,8 @@ enum class CommandKind : uint8_t {
   CalibrateVoid,
   Manual,
   ClearManual,
+  RouteSet,
+  RouteReset,
 };
 
 struct Command {
@@ -65,6 +72,8 @@ struct Command {
   bool high = true;
   int8_t left = 0;
   int8_t right = 0;
+  uint8_t routeDiv = 0; // 0 = A, 1 = B
+  RouteConfig route = {};
 };
 
 void controlBegin();

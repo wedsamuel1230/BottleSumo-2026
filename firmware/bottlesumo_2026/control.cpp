@@ -1,10 +1,10 @@
 // control.cpp — one manager, one 5 ms task, one function per state.
 //
 // Priority order inside tick():
-//   OTA inhibit > 3+ edge failure > round timeout > edge escape > state.
+//   OTA inhibit > 3+ edge round end > round timeout > edge escape > state.
 //
-// Edge failure is the user's rule: three or more IR channels off the table at
-// once is a lost round, not an escape.
+// Three or more IR channels off the table at once is a lost round: enter
+// RoundEnd and stop, not Escape.
 #include "control.h"
 
 #include <Arduino.h>
@@ -23,7 +23,6 @@ namespace {
 
 constexpr uint32_t CONTROL_BUDGET_US = 1500;
 constexpr uint32_t DRIVE_LEASE_MS = 500;   // Debug dead-man
-constexpr uint32_t ESCAPE_CLEAR_MS = 60;
 
 struct Button {
   bool stable = false;
@@ -52,6 +51,12 @@ struct Record {
   uint8_t voidDone;
 };
 
+struct RouteRecord {
+  uint32_t magic;
+  uint8_t count[2];
+  Segment seg[2][ROUTE_MAX_SEGMENTS];
+};
+
 struct Machine {
   State state = State::Init;
   Division division = Division::None;
@@ -59,6 +64,7 @@ struct Machine {
   uint32_t roundStart = 0;
 
   Calibration cal;
+  RouteConfig routes[2] = {};
   bool floorDone = false;
   bool voidDone = false;
   EdgeFilter filter;
@@ -79,10 +85,8 @@ struct Machine {
   int8_t spinDirection = 1;
   uint32_t phaseSince = 0;
 
-  uint32_t escapeSince = 0;
-  uint8_t escapeBits = 0;
-  int8_t escapeLeft = 0;
-  int8_t escapeRight = 0;
+  bool clearing = false;
+  uint32_t clearSince = 0;
 
   uint32_t holdSince = 0;
   uint32_t lastDriveAt = 0;
@@ -111,8 +115,7 @@ void change(State next, const char *why) {
 
 bool matchState() {
   return m.state != State::Init && m.state != State::Idle &&
-         m.state != State::Debug && m.state != State::Failed &&
-         m.state != State::RoundEnd;
+         m.state != State::Debug && m.state != State::RoundEnd;
 }
 
 bool freshToF(uint32_t now) { return m.tofAt && now - m.tofAt <= TOF_STALE_MS; }
@@ -139,6 +142,56 @@ void saveCalibration() {
   prefs.end();
 }
 
+RouteConfig defaultRoute(uint8_t div) {
+  RouteConfig cfg{};
+  const Segment *src = div ? ROUTE_B : ROUTE_A;
+  const uint8_t count = div ? uint8_t(sizeof(ROUTE_B) / sizeof(ROUTE_B[0]))
+                            : uint8_t(sizeof(ROUTE_A) / sizeof(ROUTE_A[0]));
+  cfg.count = count > ROUTE_MAX_SEGMENTS ? ROUTE_MAX_SEGMENTS : count;
+  for (uint8_t i = 0; i < cfg.count; ++i) cfg.seg[i] = src[i];
+  return cfg;
+}
+
+bool validRoute(const RouteConfig &cfg) {
+  if (cfg.count < 1 || cfg.count > ROUTE_MAX_SEGMENTS) return false;
+  for (uint8_t i = 0; i < cfg.count; ++i) {
+    const Segment &s = cfg.seg[i];
+    if (s.left < -100 || s.left > 100) return false;
+    if (s.right < -100 || s.right > 100) return false;
+    if (s.ms < 10 || s.ms > 10000) return false;
+  }
+  return true;
+}
+
+void loadRoutes() {
+  m.routes[0] = defaultRoute(0);
+  m.routes[1] = defaultRoute(1);
+  RouteRecord rec{};
+  if (!prefs.begin(NVS_NAMESPACE, true)) return;
+  const size_t bytes = prefs.getBytes("route", &rec, sizeof(rec));
+  prefs.end();
+  if (bytes != sizeof(rec) || rec.magic != ROUTE_MAGIC) return;
+  for (uint8_t d = 0; d < 2; ++d) {
+    RouteConfig cfg{};
+    cfg.count = rec.count[d];
+    if (cfg.count > ROUTE_MAX_SEGMENTS) continue;
+    for (uint8_t i = 0; i < cfg.count; ++i) cfg.seg[i] = rec.seg[d][i];
+    if (validRoute(cfg)) m.routes[d] = cfg;
+  }
+}
+
+void saveRoutes() {
+  if (!prefs.begin(NVS_NAMESPACE, false)) return;
+  RouteRecord rec{};
+  rec.magic = ROUTE_MAGIC;
+  for (uint8_t d = 0; d < 2; ++d) {
+    rec.count[d] = m.routes[d].count;
+    for (uint8_t i = 0; i < ROUTE_MAX_SEGMENTS; ++i) rec.seg[d][i] = m.routes[d].seg[i];
+  }
+  prefs.putBytes("route", &rec, sizeof(rec));
+  prefs.end();
+}
+
 bool calibrated() {
   if (m.cal.manualMask == 0x0F) return m.cal.valid();
   return m.floorDone && m.voidDone && m.cal.valid();
@@ -152,12 +205,6 @@ void stopAnd(State next, const char *why) {
   change(next, why);
 }
 
-void fail(const char *why) {
-  stopAnd(State::Failed, why);
-  Serial.printf("FAIL: %s edges=0x%X ir=%u,%u,%u,%u\n", why, m.edges,
-                m.ir[0], m.ir[1], m.ir[2], m.ir[3]);
-}
-
 void enterIdle(const char *why) {
   m.division = Division::None;
   stopAnd(State::Idle, why);
@@ -165,6 +212,7 @@ void enterIdle(const char *why) {
 
 void enterStartDelay(const char *why) {
   robotStop();
+  robotResetForward();
   m.roundStart = millis();
   change(State::StartDelay, why);
 }
@@ -188,8 +236,7 @@ void enterAttack() {
 }
 
 void enterEscape() {
-  m.escapeBits = m.edges;
-  m.escapeSince = millis();
+  m.clearing = false;
   change(State::Escape, "edge");
 }
 
@@ -201,34 +248,30 @@ void enterHold() {
 void enterRoundEnd(const char *why) {
   m.division = Division::None;
   stopAnd(State::RoundEnd, why);
+  Serial.printf("ROUND END %s: forward %lu ms, %lu cm\n", why ? why : "",
+                (unsigned long)robotForwardMs(),
+                (unsigned long)robotForwardCm());
 }
 
 void enterDebug() {
   robotStop();
+  robotResetForward();
   m.lastDriveAt = millis();
   change(State::Debug, "debug");
 }
 
-void exitEscape(const char *why) {
-  enterSearch(why);
-  m.advancing = false;
-  m.phaseSince = millis();
-  m.spinDirection = (m.escapeBits & 0x5) ? 1 : -1; // left edge -> spin right
-}
-
 void tickEscape(uint32_t now) {
   if (m.edges == 0) {
-    if (now - m.escapeSince >= ESCAPE_CLEAR_MS) exitEscape("edge clear");
+    if (!m.clearing) {
+      m.clearing = true;
+      m.clearSince = now;
+    }
+    if (now - m.clearSince >= ESCAPE_CLEAR_MS) enterSearch("edge clear");
     else robotStop();
     return;
   }
-  if (now - m.escapeSince >= ESCAPE_MAX_MS) {
-    exitEscape("escape max");
-    return;
-  }
+  m.clearing = false;
   const Reaction r = reactionFor(m.edges);
-  m.escapeLeft = r.left;
-  m.escapeRight = r.right;
   motorCommand(r.left, r.right, now);
 }
 
@@ -274,12 +317,9 @@ void tickAttack(uint32_t now) {
 }
 
 const Segment *routeTable(uint8_t &count) {
-  if (m.division == Division::B) {
-    count = sizeof(ROUTE_B) / sizeof(ROUTE_B[0]);
-    return ROUTE_B;
-  }
-  count = sizeof(ROUTE_A) / sizeof(ROUTE_A[0]);
-  return ROUTE_A;
+  const RouteConfig &cfg = m.routes[m.division == Division::B ? 1 : 0];
+  count = cfg.count;
+  return cfg.seg;
 }
 
 void tickRoute(uint32_t now) {
@@ -296,7 +336,10 @@ void tickRoute(uint32_t now) {
     if (m.segment >= count) enterSearch("route done");
     return;
   }
-  motorCommand(s.left, s.right, now);
+  // The first leg is the opening charge: always 100/100 straight. Its
+  // duration still comes from the table; later legs use their own left/right.
+  if (m.segment == 0) motorCommand(100, 100, now);
+  else motorCommand(s.left, s.right, now);
 }
 
 void tickCalibration(uint32_t now) {
@@ -318,7 +361,9 @@ void tickCalibration(uint32_t now) {
 void handleEdgeGuard(uint32_t now) {
   if (!matchState()) return;
   if (edgeFails(m.edges)) {
-    fail("3+ edges");
+    Serial.printf("ROUND END: 3+ edges=0x%X ir=%u,%u,%u,%u\n", m.edges,
+                  m.ir[0], m.ir[1], m.ir[2], m.ir[3]);
+    enterRoundEnd("3+ edges");
     return;
   }
   if (m.edges && m.state != State::Escape) enterEscape();
@@ -337,8 +382,8 @@ void handleCommands() {
         }
         break;
       case CommandKind::Stop:
-        if (m.state == State::Debug || m.state == State::Failed ||
-            m.state == State::RoundEnd || m.state == State::Init) {
+        if (m.state == State::Debug || m.state == State::RoundEnd ||
+            m.state == State::Init) {
           enterIdle("stop");
         } else {
           enterRoundEnd("stop");
@@ -359,7 +404,7 @@ void handleCommands() {
       case CommandKind::CalibrateFloor:
       case CommandKind::CalibrateVoid:
         if (m.state == State::Idle || m.state == State::Debug ||
-            m.state == State::Failed || m.state == State::RoundEnd) {
+            m.state == State::RoundEnd) {
           m.captureFloor = command.kind == CommandKind::CalibrateFloor;
           m.cal.resetCapture(m.captureFloor);
           m.captureSince = millis();
@@ -384,6 +429,23 @@ void handleCommands() {
           snprintf(m.event, sizeof(m.event), "auto ch%u", command.channel);
         }
         break;
+      case CommandKind::RouteSet:
+        if (command.routeDiv < 2 && !matchState() && !m.capturing &&
+            validRoute(command.route)) {
+          m.routes[command.routeDiv] = command.route;
+          saveRoutes();
+          snprintf(m.event, sizeof(m.event), "route %c saved",
+                   command.routeDiv ? 'B' : 'A');
+        }
+        break;
+      case CommandKind::RouteReset:
+        if (command.routeDiv < 2 && !matchState() && !m.capturing) {
+          m.routes[command.routeDiv] = defaultRoute(command.routeDiv);
+          saveRoutes();
+          snprintf(m.event, sizeof(m.event), "route %c default",
+                   command.routeDiv ? 'B' : 'A');
+        }
+        break;
     }
   }
 }
@@ -399,10 +461,17 @@ void publish(uint32_t now) {
   snap.stateMs = now - m.stateSince;
   snap.roundMs = m.roundStart ? now - m.roundStart : 0;
   snap.edges = m.edges;
+  snap.forwardMs = robotForwardMs();
+  snap.forwardCm = robotForwardCm();
+  snap.manualMask = m.cal.manualMask;
+  snap.manualHigh = m.cal.manualHigh;
+  snap.routes[0] = m.routes[0];
+  snap.routes[1] = m.routes[1];
   for (uint8_t i = 0; i < 4; ++i) {
     snap.ir[i] = m.ir[i];
     snap.threshold[i] = ((m.floorDone && m.voidDone) || m.cal.manual(i))
                             ? m.cal.threshold(i) : 0;
+    snap.autoThreshold[i] = (m.floorDone && m.voidDone) ? m.cal.autoThreshold(i) : 0;
   }
   snap.tofMm = m.tofMm;
   snap.tofFresh = freshToF(now);
@@ -432,7 +501,6 @@ const char *stateName(State state) {
     case State::Attack: return "attack";
     case State::Escape: return "escape";
     case State::Hold: return "hold";
-    case State::Failed: return "failed";
     case State::RoundEnd: return "round-end";
   }
   return "?";
@@ -448,6 +516,7 @@ const char *divisionName(Division division) {
 
 void controlBegin() {
   loadCalibration();
+  loadRoutes();
   commands = xQueueCreate(8, sizeof(Command));
   m.state = State::Idle;
   m.stateSince = millis();
@@ -549,9 +618,9 @@ void controlTask(void *arg) {
           robotStop();
           if (now - m.holdSince >= HOLD_MS) enterSearch("hold done");
           break;
-        case State::Failed:
         case State::RoundEnd:
           robotStop();
+          if (now - m.stateSince >= ROUND_END_MS) enterIdle("auto idle");
           break;
       }
       if (matchState() && m.roundStart && now - m.roundStart >= ROUND_MS) {
